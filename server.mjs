@@ -2679,6 +2679,75 @@ function claimKnown(token) {
   return Boolean(lookupKnownClaim(token));
 }
 
+function characterDesignRecord(value) {
+  return value && typeof value === "object" && !Array.isArray(value) ? value : {};
+}
+
+function ensureCharacterDesignRecord(claim) {
+  const characterId = String(claim?.characterId || "").trim();
+  if (!characterId) return null;
+  const current = characterDesignRecord(characterDesigns[characterId]);
+  const currentMeta = characterDesignRecord(current.meta);
+  const fallbackName = String(claim.characterName || claim.label || characterId).trim();
+  const sourceImage = String(claim.sourceImageUrl || "").trim();
+  const fallbackMeta = {
+    id: characterId,
+    code: "ID-CUSTOM",
+    name: fallbackName || characterId,
+    shortName: fallbackName || characterId,
+    source: sourceImage,
+    sourceCard: sourceImage,
+    generatedSheet: sourceImage,
+    custom: true,
+    identityContract: Array.isArray(claim.identityContract) ? claim.identityContract : [],
+    negativePrompt: claim.negativePrompt || "",
+  };
+  const next = {
+    ...current,
+    meta: { ...fallbackMeta, ...currentMeta, id: currentMeta.id || characterId },
+    zones: characterDesignRecord(current.zones),
+  };
+  characterDesigns[characterId] = next;
+  return next;
+}
+
+function persistCharacterZoneDelivery(claim, delivery) {
+  const record = ensureCharacterDesignRecord(claim);
+  const zoneId = String(delivery?.zoneId || "").trim();
+  const image = delivery?.image || {};
+  if (!record || !zoneId || !image.url) return;
+  record.zones = {
+    ...characterDesignRecord(record.zones),
+    [zoneId]: {
+      ...characterDesignRecord(record.zones?.[zoneId]),
+      url: image.url,
+      name: image.name || `bot-${zoneId}.jpg`,
+      imageId: image.id || null,
+      updatedAt: delivery.deliveredAt || Date.now(),
+      note: delivery.note || "Bot delivery",
+      model: image.provider || "bot",
+      temporary: Boolean(image.temporary),
+      botRequestedAt: null,
+    },
+  };
+  if (!record.activeZoneId) record.activeZoneId = zoneId;
+  if (record.sheetRequestedAt && Object.keys(record.zones).length >= (Array.isArray(claim.zones) && claim.zones.length ? claim.zones.length : 1)) {
+    delete record.sheetRequestedAt;
+  }
+  saveCharacterDesigns();
+}
+
+function persistCharacterSheetDelivery(claim, delivery) {
+  const record = ensureCharacterDesignRecord(claim);
+  const sheetUrl = delivery?.sheet?.url;
+  if (!record || !sheetUrl) return;
+  record.meta = {
+    ...characterDesignRecord(record.meta),
+    generatedSheet: sheetUrl,
+  };
+  saveCharacterDesigns();
+}
+
 function designArgsWithClaimDefaults(args = {}) {
   const claim = lookupKnownClaim(args.claim_token || args.claimToken);
   if (!claim) return args;
@@ -3045,6 +3114,7 @@ async function callMcpTool(name, args = {}) {
       deliveredAt: Date.now(),
     };
     designDeliveries.push(delivery);
+    persistCharacterZoneDelivery(claim, delivery);
     pruneDesignState();
     return mcpTextResult({ ok: true, delivered: true, zone_id: zoneId });
   }
@@ -3086,6 +3156,7 @@ async function callMcpTool(name, args = {}) {
       deliveredAt: Date.now(),
     };
     designDeliveries.push(delivery);
+    persistCharacterSheetDelivery(claim, delivery);
     pruneDesignState();
     return mcpTextResult({ ok: true, delivered: true, kind: "sheet", zones: zones.length });
   }
