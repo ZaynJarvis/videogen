@@ -355,12 +355,18 @@ a{color:inherit;text-decoration:none}
 .character-empty>.mono{font-size:10px;letter-spacing:.18em;text-transform:uppercase;color:var(--fg-3)}
 .character-empty h1{font-size:46px;margin:0;line-height:1.02}
 .character-empty p{margin:0 auto;max-width:440px;color:var(--fg-2);font-size:14px;line-height:1.55}
-.character-empty-form{position:relative;display:flex;flex-direction:column;gap:10px;margin-top:8px;text-align:left}
-.character-empty-form .drop{min-height:164px}
+.character-source-upload{
+  position:relative;display:flex;flex-direction:column;gap:10px;text-align:left;
+}
+.character-source-upload .drop{min-height:164px}
+.character-source-upload.is-compact .drop{
+  min-height:44px!important;padding:9px 14px!important;
+  flex-direction:row;justify-content:center;text-align:center;gap:8px;
+}
+.character-source-upload.is-compact .drop .drop-icon{width:18px;height:18px;flex:0 0 auto}
 
-/* Clean upload-busy overlay (A4) — shared by empty form + header dropzone */
-.character-design-new.is-busy,.character-empty-form.is-busy{position:relative}
-.character-design-new.is-busy .drop,.character-empty-form.is-busy .drop{
+/* Clean upload-busy overlay (A4) — shared by source-upload forms */
+.character-source-upload.is-busy .drop{
   opacity:.32;pointer-events:none;
 }
 .character-upload-busy{
@@ -415,12 +421,45 @@ a{color:inherit;text-decoration:none}
 .character-design-new{
   flex:0 0 auto;display:block;width:220px;max-width:220px;min-width:0;
 }
-.character-source-description{min-height:58px;font-size:12px;margin-bottom:8px}
-.character-design-new .drop{
-  min-height:44px!important;padding:9px 14px!important;
-  flex-direction:row;justify-content:center;text-align:center;gap:8px;
+.character-source-description{min-height:74px;font-size:12px}
+.character-design-upload-btn{width:100%}
+
+.character-upload-page{max-width:1180px}
+.character-upload-head{
+  display:flex;align-items:flex-end;gap:18px;margin:0 0 18px;min-width:0;
 }
-.character-design-new .drop .drop-icon{width:18px;height:18px;flex:0 0 auto}
+.character-upload-head .btn{flex:0 0 auto}
+.character-upload-head .mono{
+  font-size:10px;letter-spacing:.18em;text-transform:uppercase;color:var(--fg-3);margin-bottom:4px;
+}
+.character-upload-head h1{font-size:34px;line-height:1.02;margin:0}
+.character-upload-layout{
+  display:grid;grid-template-columns:220px minmax(0,1fr);gap:18px;align-items:start;
+}
+.character-upload-sidebar{
+  padding:12px;position:sticky;top:18px;
+}
+.character-upload-sidebar-head{
+  display:flex;align-items:center;justify-content:space-between;gap:10px;margin-bottom:10px;
+}
+.character-upload-sidebar-head .label{margin:0}
+.character-upload-sidebar .character-roster{margin:0}
+.character-upload-sidebar .character-roster-list{
+  grid-template-columns:1fr;gap:9px;
+}
+.character-upload-main{
+  padding:18px;min-width:0;
+}
+.character-upload-copy{
+  margin-bottom:16px;min-width:0;
+}
+.character-upload-copy .mono{
+  font-size:10px;letter-spacing:.18em;text-transform:uppercase;color:var(--accent);display:block;margin-bottom:4px;
+}
+.character-upload-copy h2{
+  font-size:30px;line-height:1.04;margin:0;
+}
+.character-upload-main .character-source-upload .drop{min-height:260px}
 
 /* Roster — clean uniform grid of square cover cards */
 .character-roster{margin:0 0 18px}
@@ -1314,8 +1353,15 @@ a{color:inherit;text-decoration:none}
   .create-page .mono.muted-2{min-width:0;gap:10px;overflow-wrap:anywhere}
   .create-page .param-grid{grid-template-columns:1fr!important}
   .character-design-page{padding-top:20px}
-  .character-design-bar,.character-roster,.character-design-layout{width:100%;max-width:calc(100vw - 40px)}
+  .character-design-bar,.character-roster,.character-design-layout,.character-upload-layout{width:100%;max-width:calc(100vw - 40px)}
   .character-design-headline h1{font-size:30px}
+  .character-upload-head{align-items:flex-start;flex-direction:column;gap:12px}
+  .character-upload-head h1{font-size:30px}
+  .character-upload-layout{grid-template-columns:1fr}
+  .character-upload-sidebar{position:static;padding:10px}
+  .character-upload-sidebar .character-roster-list{grid-template-columns:repeat(auto-fill,minmax(108px,1fr))}
+  .character-upload-main{padding:14px}
+  .character-upload-copy h2{font-size:26px}
   .character-name-edit.input{font-size:30px}
   .character-design-new{width:100%;max-width:100%}
   .character-design-stats span{max-width:calc(100vw - 40px)}

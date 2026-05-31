@@ -765,6 +765,44 @@ function CharacterReview({ character, zones, onClose, onSelectZone, onSave, show
   );
 }
 
+function CharacterSourceUploadForm({
+  adding,
+  description,
+  onDescriptionChange,
+  onFile,
+  onFiles,
+  onError,
+  phoneView,
+  compact = false,
+}) {
+  return (
+    <div className={"character-source-upload" + (adding ? " is-busy" : "") + (compact ? " is-compact" : "")}>
+      {adding && (
+        <div className="character-upload-busy">
+          <span className="spinner" />
+          <span className="mono muted-2">Adding character…</span>
+        </div>
+      )}
+      <textarea
+        className="textarea character-source-description"
+        value={description}
+        onChange={(event) => onDescriptionChange(event.target.value)}
+        placeholder="Describe identity, clothing, pose, style, or details to preserve"
+      />
+      <DropZone
+        compact={compact}
+        multiple
+        image={null}
+        onFile={onFile}
+        onFiles={onFiles}
+        allowDrag={!phoneView}
+        onError={onError}
+        hint={adding ? "Adding…" : phoneView ? "Upload source images" : "Drop source images"}
+      />
+    </div>
+  );
+}
+
 export function CharacterDesignPage() {
   const { state, addImage, updateCharacterDesign, removeCharacterDesign } = useStore();
   const { query, navigate } = useHashRoute();
@@ -796,6 +834,7 @@ export function CharacterDesignPage() {
   const activeKey = activeZone ? `${selectedCharacter.id}:${activeZone.id}` : "";
   const activeInstruction = activeZone ? (zoneDrafts[activeKey] ?? activeZone.improvement) : "";
   const activeReferenceDescription = activeZone ? (zoneReferenceDescriptions[activeKey] ?? activeZone.referenceDescription ?? "") : "";
+  const uploadMode = query.upload === "1";
   const updatedZones = zones.filter((zone) => zone.updatedAt).length;
   // Still waiting for luna to deliver some zones after a sheet request.
   const awaitingSheet = hasCharacter && Boolean(saved.sheetRequestedAt) && updatedZones < zones.length;
@@ -891,7 +930,11 @@ export function CharacterDesignPage() {
     const character = resolveWorkspaceCharacter(state.characterDesigns, characterId);
     if (!character) return;
     const characterSaved = state.characterDesigns?.[character.id] || {};
-    navigate("/design", { character: character.id, zone: characterSaved.activeZoneId || character.zones[0]?.id });
+    navigate("/design", {
+      character: character.id,
+      zone: characterSaved.activeZoneId || character.zones[0]?.id,
+      ...(uploadMode ? { upload: "1" } : {}),
+    });
   };
 
   const selectZone = (zoneId) => {
@@ -1108,6 +1151,14 @@ export function CharacterDesignPage() {
     });
   };
 
+  const openUploadFlow = () => {
+    navigate("/design", { character: selectedCharacter.id, zone: activeZone?.id, upload: "1" });
+  };
+
+  const closeUploadFlow = () => {
+    navigate("/design", { character: selectedCharacter.id, zone: activeZone?.id || saved.activeZoneId || "full_front" });
+  };
+
   // ── Add the rename + review-save handlers ──
   const startRename = () => {
     if (!selectedCharacter) return;
@@ -1176,29 +1227,58 @@ export function CharacterDesignPage() {
           <div className="mono muted">character design</div>
           <h1 className="display">Create your first character</h1>
           <p>Drop a clean reference image and luna builds a uniform set of nine reusable identity zones.</p>
-          <div className={"character-empty-form" + (addingCharacter ? " is-busy" : "")}>
-            {addingCharacter && (
-              <div className="character-upload-busy">
-                <span className="spinner" />
-                <span className="mono muted-2">Adding character…</span>
-              </div>
-            )}
-            <textarea
-              className="textarea character-source-description"
-              value={sourceUploadDescription}
-              onChange={(event) => setSourceUploadDescription(event.target.value)}
-              placeholder="Description for the uploaded reference set"
-            />
-            <DropZone
-              multiple
-              image={null}
+          <CharacterSourceUploadForm
+            adding={addingCharacter}
+            description={sourceUploadDescription}
+            onDescriptionChange={setSourceUploadDescription}
+            onFile={createCharacterFromUpload}
+            onFiles={createCharactersFromUploads}
+            phoneView={phoneView}
+            onError={(error) => show(error.message || "Image upload failed")}
+          />
+        </div>
+      </div>
+    );
+  }
+
+  if (uploadMode) {
+    return (
+      <div className="page-shell character-design-page character-upload-page">
+        {node}
+        <header className="character-upload-head">
+          <button className="btn btn-ghost" type="button" onClick={closeUploadFlow}>
+            <Icon name="arrowLeft" size={14} /> Back
+          </button>
+          <div>
+            <div className="mono muted">character design</div>
+            <h1 className="display">Upload profiles</h1>
+          </div>
+        </header>
+
+        <div className="character-upload-layout">
+          <aside className="character-upload-sidebar surface">
+            <div className="character-upload-sidebar-head">
+              <span className="label">Profiles</span>
+              <span className="mono muted-2">{characters.length}</span>
+            </div>
+            {RosterStrip}
+          </aside>
+
+          <section className="character-upload-main surface">
+            <div className="character-upload-copy">
+              <span className="mono muted">source upload</span>
+              <h2 className="display">Add one or more source images</h2>
+            </div>
+            <CharacterSourceUploadForm
+              adding={addingCharacter}
+              description={sourceUploadDescription}
+              onDescriptionChange={setSourceUploadDescription}
               onFile={createCharacterFromUpload}
               onFiles={createCharactersFromUploads}
-              allowDrag={!phoneView}
+              phoneView={phoneView}
               onError={(error) => show(error.message || "Image upload failed")}
-              hint={addingCharacter ? "Adding character…" : phoneView ? "Upload source images" : "Drop source images"}
             />
-          </div>
+          </section>
         </div>
       </div>
     );
@@ -1259,29 +1339,10 @@ export function CharacterDesignPage() {
             <span>{runtimeImage?.uploadConfigured ? "cloud ready" : "cloud missing"}</span>
           </div>
         </div>
-        <div className={"character-design-new" + (addingCharacter ? " is-busy" : "")}>
-          {addingCharacter && (
-            <div className="character-upload-busy">
-              <span className="spinner" />
-              <span className="mono muted-2">Adding character…</span>
-            </div>
-          )}
-          <textarea
-            className="textarea character-source-description"
-            value={sourceUploadDescription}
-            onChange={(event) => setSourceUploadDescription(event.target.value)}
-            placeholder="Source description"
-          />
-          <DropZone
-            compact
-            multiple
-            image={null}
-            onFile={createCharacterFromUpload}
-            onFiles={createCharactersFromUploads}
-            allowDrag={!phoneView}
-            onError={(error) => show(error.message || "Image upload failed")}
-            hint={addingCharacter ? "Adding…" : phoneView ? "Upload source" : "Drop sources"}
-          />
+        <div className="character-design-new">
+          <button className="btn btn-primary character-design-upload-btn" type="button" onClick={openUploadFlow}>
+            <Icon name="upload" size={14} /> Upload profiles
+          </button>
         </div>
       </header>
 
