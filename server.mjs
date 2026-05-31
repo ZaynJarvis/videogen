@@ -29,6 +29,7 @@ const artifactsDir = join(publicDataDir, "artifacts");
 const coversDir = join(publicDataDir, "covers");
 const inputsDir = join(publicDataDir, "inputs");
 const tasksFile = join(dataDir, "tasks.json");
+const characterDesignsFile = join(dataDir, "character-designs.json");
 const publicTasksFile = join(publicDataDir, "tasks.json");
 const arkApiKey = process.env.ARK_API_KEY || "";
 const arkBaseUrl = (process.env.ARK_API_BASE_URL || "https://ark.cn-beijing.volces.com/api/v3").replace(/\/+$/, "");
@@ -135,6 +136,7 @@ const contentTypes = {
 };
 
 let tasks = loadTasks();
+let characterDesigns = loadCharacterDesigns();
 
 for (const task of tasks.values()) {
   const normalizedTitle = limitTitle(task.title || titleFromPrompt(task.prompt));
@@ -194,6 +196,35 @@ function saveTasks() {
   const publicTmp = `${publicTasksFile}.${process.pid}.${Date.now()}.tmp`;
   writeFileSync(publicTmp, JSON.stringify(publicPayload, null, 2));
   renameSync(publicTmp, publicTasksFile);
+}
+
+function cleanCharacterDesigns(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return {};
+  return Object.fromEntries(Object.entries(value).filter(([key, item]) =>
+    key && item && typeof item === "object" && !Array.isArray(item)
+  ));
+}
+
+function loadCharacterDesigns() {
+  try {
+    if (!existsSync(characterDesignsFile)) return {};
+    const raw = JSON.parse(readFileSync(characterDesignsFile, "utf8"));
+    return cleanCharacterDesigns(raw.characterDesigns || {});
+  } catch (error) {
+    console.error("failed to load character designs", error);
+    return {};
+  }
+}
+
+function saveCharacterDesigns() {
+  const payload = {
+    version: 1,
+    updatedAt: Date.now(),
+    characterDesigns: cleanCharacterDesigns(characterDesigns),
+  };
+  const tmp = `${characterDesignsFile}.${process.pid}.${Date.now()}.tmp`;
+  writeFileSync(tmp, JSON.stringify(payload, null, 2));
+  renameSync(tmp, characterDesignsFile);
 }
 
 function clampInt(value, min, max, fallback) {
@@ -2261,6 +2292,23 @@ async function handleCharacterDesignSheetProxy(req, res, url) {
   }
 }
 
+async function handleGetCharacterDesignState(req, res) {
+  sendJson(res, 200, {
+    characterDesigns: cleanCharacterDesigns(characterDesigns),
+    updated_at: existsSync(characterDesignsFile) ? statSync(characterDesignsFile).mtimeMs : null,
+  });
+}
+
+async function handlePutCharacterDesignState(req, res) {
+  const input = await readJson(req);
+  characterDesigns = cleanCharacterDesigns(input.characterDesigns || input.character_designs || {});
+  saveCharacterDesigns();
+  sendJson(res, 200, {
+    ok: true,
+    characterDesigns,
+  });
+}
+
 async function handleListImages(req, res, url) {
   const limit = clampInt(url.searchParams.get("limit"), 1, 100, 100);
   const cursor = url.searchParams.get("cursor") || "";
@@ -3280,6 +3328,16 @@ async function routeApi(req, res, url) {
 
     if (url.pathname === "/api/character-design/claim" && req.method === "POST") {
       await handleCharacterDesignClaim(req, res);
+      return true;
+    }
+
+    if (url.pathname === "/api/character-design/state" && req.method === "GET") {
+      await handleGetCharacterDesignState(req, res);
+      return true;
+    }
+
+    if (url.pathname === "/api/character-design/state" && (req.method === "PUT" || req.method === "POST")) {
+      await handlePutCharacterDesignState(req, res);
       return true;
     }
 

@@ -1,4 +1,5 @@
-import { useState, useEffect, useContext, createContext, useCallback, useMemo } from 'react';
+import { useState, useEffect, useContext, createContext, useCallback, useMemo, useRef } from 'react';
+import { authHeader } from './auth';
 
 const STORAGE_KEY = "vgs.state.v3";
 
@@ -25,6 +26,10 @@ function sanitizeState(state) {
   };
 }
 
+function hasCharacterDesigns(value) {
+  return Boolean(value && typeof value === "object" && Object.keys(value).length);
+}
+
 function loadState() {
   try {
     const raw = localStorage.getItem(STORAGE_KEY);
@@ -37,10 +42,28 @@ function loadState() {
 
 function saveState(s) {
   try {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(s));
+    const browserState = { ...(s || {}) };
+    delete browserState.characterDesigns;
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(browserState));
   } catch (e) {
     console.warn("save failed", e);
   }
+}
+
+async function readServerCharacterDesigns() {
+  const res = await fetch("/api/character-design/state", { headers: authHeader() });
+  if (!res.ok) throw new Error(`character designs load failed (${res.status})`);
+  const data = await res.json().catch(() => ({}));
+  return data.characterDesigns && typeof data.characterDesigns === "object" ? data.characterDesigns : {};
+}
+
+async function writeServerCharacterDesigns(characterDesigns) {
+  const res = await fetch("/api/character-design/state", {
+    method: "PUT",
+    headers: { "content-type": "application/json", ...authHeader() },
+    body: JSON.stringify({ characterDesigns: characterDesigns || {} }),
+  });
+  if (!res.ok) throw new Error(`character designs save failed (${res.status})`);
 }
 
 function imageKeys(img) {
@@ -78,8 +101,47 @@ const StoreCtx = createContext(null);
 
 export function StoreProvider({ children }) {
   const [state, setState] = useState(loadState);
+  const serverCharacterDesignsLoadedRef = useRef(false);
+  const saveTimerRef = useRef(null);
 
   useEffect(() => { saveState(state); }, [state]);
+
+  useEffect(() => {
+    let cancelled = false;
+    const localCharacterDesigns = state.characterDesigns || {};
+    readServerCharacterDesigns()
+      .then(async (serverCharacterDesigns) => {
+        if (cancelled) return;
+        if (hasCharacterDesigns(serverCharacterDesigns)) {
+          setState((s) => ({ ...s, characterDesigns: serverCharacterDesigns }));
+        } else if (hasCharacterDesigns(localCharacterDesigns)) {
+          await writeServerCharacterDesigns(localCharacterDesigns);
+        } else {
+          setState((s) => ({ ...s, characterDesigns: {} }));
+        }
+      })
+      .catch((error) => {
+        console.warn("character design server sync failed", error);
+      })
+      .finally(() => {
+        if (!cancelled) serverCharacterDesignsLoadedRef.current = true;
+      });
+    return () => { cancelled = true; };
+    // Run once: after AuthGate has allowed the app through, the token is stable.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  useEffect(() => {
+    if (!serverCharacterDesignsLoadedRef.current) return undefined;
+    if (saveTimerRef.current) clearTimeout(saveTimerRef.current);
+    saveTimerRef.current = setTimeout(() => {
+      writeServerCharacterDesigns(state.characterDesigns || {})
+        .catch((error) => console.warn("character design server save failed", error));
+    }, 350);
+    return () => {
+      if (saveTimerRef.current) clearTimeout(saveTimerRef.current);
+    };
+  }, [state.characterDesigns]);
 
   const setApiKey = useCallback((apiKey) => setState((s) => ({ ...s, apiKey })), []);
 
