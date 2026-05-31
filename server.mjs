@@ -3251,7 +3251,14 @@ async function routeApi(req, res, url) {
       return true;
     }
 
-    if (url.pathname.startsWith("/api/") && !webAuthorized(req, url)) {
+    // The sheet-proxy only serves host-allowlisted public images (repo host +
+    // *.volces.com) and must be loadable by <img>/canvas (which cannot send the
+    // bearer header), so it stays open like /media/* and static assets.
+    if (
+      url.pathname.startsWith("/api/") &&
+      url.pathname !== "/api/character-design/sheet-proxy" &&
+      !webAuthorized(req, url)
+    ) {
       sendJson(res, 401, { error: { code: "unauthorized", message: "Sign in to continue." } });
       return true;
     }
