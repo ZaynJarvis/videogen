@@ -1034,6 +1034,7 @@ function buildCharacterZonePrompt(context, referencePrompt = "") {
     context.zoneRole ? `Zone role: ${context.zoneRole}.` : "",
     `Requested improvement: ${context.instruction}`,
     referencePrompt ? `Reference-derived visual brief: ${referencePrompt}` : "",
+    `Mandatory reference use: the attached/source image(s) are the visual authority. Use them as real image references, not just as text inspiration; do not invent a different face, age, body type, hairstyle, outfit, palette, or signature details.`,
     `Identity lock: ${contract} Keep the same single subject identity, proportions, colors, and signature details as the source.`,
     cropText,
     `Output composition: one clean single-subject image, ${context.aspect} aspect intent, subject centered and fully in frame, plain soft light-gray seamless studio background, even neutral studio lighting.`,
@@ -1307,6 +1308,11 @@ function characterSheetContext(input, mediaBaseUrl) {
     negativePrompt,
     sourceUrls,
     zones,
+    output: (
+      input.output === "zones" || input.mode === "zones" || input.return_zones === true || input.returnZones === true
+        ? "zones"
+        : "sheet"
+    ),
     size: normalizeImageSize(input.size || input.output_size || arkSheetSize),
     seed: clampInt(input.seed, -1, 4_294_967_295, -1),
     tag: String(input.tag || input.cloud_tag || "design").trim(),
@@ -1334,11 +1340,73 @@ function buildCharacterSheetPrompt(ctx, grid) {
   ].filter(Boolean).join("\n");
 }
 
+async function generateCharacterSheetZones(ctx, mediaBaseUrl) {
+  const zoneResults = [];
+  const anchorRefs = [];
+  const firstSource = ctx.sourceUrls[0];
+
+  for (let index = 0; index < ctx.zones.length; index += 1) {
+    const zone = ctx.zones[index];
+    const refs = normalizeUrlList([
+      ...ctx.sourceUrls,
+      ...anchorRefs,
+    ]).slice(0, 4);
+    const zoneSeed = ctx.seed >= 0 ? ctx.seed + index : undefined;
+    const result = await generateCharacterZoneImage({
+      character_name: ctx.characterName,
+      zone_id: zone.id,
+      zone_label: zone.label,
+      zone_role: zone.role,
+      instruction: zone.prompt,
+      identity_contract: ctx.identityContract,
+      negative_prompt: ctx.negativePrompt,
+      source_image_url: firstSource,
+      reference_image_urls: refs,
+      size: ctx.size,
+      seed: zoneSeed,
+      tag: ctx.tag,
+    }, mediaBaseUrl);
+    const imageUrl = result.image?.url || result.image?.src || "";
+    if (imageUrl && (index === 0 || zone.id === "full_front")) {
+      anchorRefs.splice(0, anchorRefs.length, imageUrl);
+    }
+    zoneResults.push({
+      zone_id: zone.id,
+      label: zone.label,
+      index,
+      row: Math.floor(index / 3),
+      col: index % 3,
+      image: result.image,
+      persisted: result.persisted,
+      temporary: result.temporary,
+      persist_error: result.persist_error,
+      prompt: result.prompt,
+      reference_prompt: result.reference_prompt,
+    });
+  }
+
+  return zoneResults;
+}
+
 async function generateCharacterSheet(rawInput, mediaBaseUrl = publicBaseUrl) {
   const ctx = characterSheetContext(rawInput, mediaBaseUrl);
   const cols = 3;
   const rows = Math.ceil(ctx.zones.length / cols);
   const grid = { rows, cols };
+  if (ctx.output === "zones") {
+    const zones = await generateCharacterSheetZones(ctx, mediaBaseUrl);
+    return {
+      ok: true,
+      model: arkImageModel,
+      size: ctx.size,
+      seed: ctx.seed,
+      output: "zones",
+      grid,
+      zones,
+      zone_images: zones,
+      prompt: "Generated as per-zone reference-image outputs; see each zone prompt.",
+    };
+  }
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), arkImageGridTimeoutMs);
   timeout.unref?.();
@@ -2095,6 +2163,10 @@ async function handleCharacterDesignClaim(req, res) {
   const kind = input.kind === "sheet" ? "sheet" : "zone";
   const zones = Array.isArray(input.zones) ? input.zones : [];
   const grid = input.grid && typeof input.grid === "object" ? input.grid : { rows: 3, cols: 3 };
+  const sourceImageUrl = String(input.source_image_url || input.sourceImageUrl || "").trim();
+  const characterName = String(input.character_name || input.characterName || label || "").trim();
+  const identityContract = normalizeTextList(input.identity_contract || input.identityContract);
+  const negativePrompt = String(input.negative_prompt || input.negativePrompt || "").trim();
   if (kind === "sheet") {
     if (!characterId || !zones.length) {
       throw httpError(400, "claim_target_required", "character_id and a non-empty zones array are required to mint a sheet claim.");
@@ -2102,12 +2174,20 @@ async function handleCharacterDesignClaim(req, res) {
   } else if (!characterId || !zoneId) {
     throw httpError(400, "claim_target_required", "character_id and zone_id are required to mint a claim.");
   }
-  const claim = mintDesignClaim(characterId, zoneId, label, { kind, zones, grid });
+  const claim = mintDesignClaim(characterId, zoneId, label, {
+    kind,
+    zones,
+    grid,
+    sourceImageUrl,
+    characterName,
+    identityContract,
+    negativePrompt,
+  });
   const mcpUrl = (publicBaseUrl || requestPublicBaseUrl(req)) + "/mcp";
   sendJson(res, 201, {
     token: claim.token,
     mcp_url: mcpUrl,
-    tools: ["deliver_character_zone", "deliver_character_sheet"],
+    tools: [...SCOPED_MCP_TOOLS],
     tool: "deliver_character_zone",
     kind,
     expires_in: Math.floor(designClaimTtlMs / 1000),
@@ -2496,6 +2576,10 @@ function mintDesignClaim(characterId, zoneId, label, opts = {}) {
     kind,
     zones,
     grid,
+    sourceImageUrl: String(opts.sourceImageUrl || opts.source_image_url || "").trim(),
+    characterName: String(opts.characterName || opts.character_name || label || "").trim(),
+    identityContract: normalizeTextList(opts.identityContract || opts.identity_contract),
+    negativePrompt: String(opts.negativePrompt || opts.negative_prompt || "").trim(),
     createdAt: now,
     expiresAt: now + designClaimTtlMs,
     used: false,
@@ -2545,6 +2629,25 @@ function lookupKnownClaim(token) {
 
 function claimKnown(token) {
   return Boolean(lookupKnownClaim(token));
+}
+
+function designArgsWithClaimDefaults(args = {}) {
+  const claim = lookupKnownClaim(args.claim_token || args.claimToken);
+  if (!claim) return args;
+  const next = { ...args };
+  if (!next.character_id && !next.characterId) next.character_id = claim.characterId;
+  if (!next.character_name && !next.characterName && claim.characterName) next.character_name = claim.characterName;
+  if (!next.source_image_url && !next.sourceImageUrl && claim.sourceImageUrl) next.source_image_url = claim.sourceImageUrl;
+  if (!next.identity_contract && !next.identityContract && claim.identityContract?.length) next.identity_contract = claim.identityContract;
+  if (!next.negative_prompt && !next.negativePrompt && claim.negativePrompt) next.negative_prompt = claim.negativePrompt;
+  if (claim.kind === "sheet") {
+    if (!Array.isArray(next.zones) && claim.zones?.length) next.zones = claim.zones;
+    if (!next.grid && claim.grid) next.grid = claim.grid;
+  } else {
+    if (!next.zone_id && !next.zoneId && claim.zoneId) next.zone_id = claim.zoneId;
+    if (!next.zone_label && !next.zoneLabel && claim.label) next.zone_label = claim.label;
+  }
+  return next;
 }
 
 function mcpAuthorized(req, url) {
@@ -2635,7 +2738,7 @@ function mcpTools() {
     },
     {
       name: "design_iterate",
-      description: "Iterate a single character-design zone/aspect with ARK seedream and persist the result to Cloud (default tag=design). Mirrors the Studio character-design zone endpoint so a bot can drive per-aspect refinement. Pass source_image_url for the current image to refine and reference_image_urls for identity references.",
+      description: "Iterate a single character-design zone/aspect with ARK seedream and persist the result to Cloud (default tag=design). Mirrors the Studio character-design zone endpoint so a bot can drive per-aspect refinement. Pass source_image_url for the actual reference image; it is sent to ARK as image reference input, not only described in text.",
       inputSchema: {
         type: "object",
         properties: {
@@ -2650,6 +2753,7 @@ function mcpTools() {
           aspect: { type: "string", description: "Optional aspect ratio intent, e.g. 1:1." },
           size: { type: "string", description: "Optional explicit output size, e.g. 1920x1920." },
           seed: { type: "integer", description: "Optional seed for reproducibility." },
+          claim_token: { type: "string", description: "Optional Studio claim token; scoped callers can use it to fill claim-bound character/source defaults." },
           source_image_url: { type: "string", description: "Optional current/source image URL to refine." },
           reference_image_urls: { type: "array", items: { type: "string" }, description: "Optional reference image URLs for identity." },
           tag: { type: "string", description: "Cloud tag for the saved image (default design).", default: "design" },
@@ -2688,11 +2792,15 @@ function mcpTools() {
     },
     {
       name: "generate_character_sheet",
-      description: "Generate a full multi-view identity grid for a character from a source image via ARK seedream sequential image-to-image; persists each view to Cloud (default tag=design).",
+      description: "Generate a full multi-view identity set for a character from a source image via ARK seedream reference image input. For best identity fidelity, call with output=\"zones\" / return_zones=true; Studio returns one persisted Cloud image per requested zone, suitable for deliver_character_zone. The legacy contact-sheet output is still available for output=\"sheet\".",
       inputSchema: {
         type: "object",
         properties: {
           source_image_url: { type: "string", description: "Source/reference image URL for the character identity." },
+          claim_token: { type: "string", description: "Optional Studio claim token; scoped callers can use it to fill claim-bound character/source/zones defaults." },
+          source_image_urls: { type: "array", items: { type: "string" }, description: "Optional additional source/reference image URLs for the character identity." },
+          output: { type: "string", enum: ["zones", "sheet"], description: "Use zones for one high-quality image per view; use sheet for a single 3x3 contact sheet." },
+          return_zones: { type: "boolean", description: "Alias for output=zones." },
           zones: {
             type: "array",
             description: "Zones to generate, one image per zone in order.",
@@ -2800,7 +2908,8 @@ async function callMcpTool(name, args = {}) {
   }
 
   if (name === "design_iterate") {
-    const result = await generateCharacterZoneImage({ ...args, tag: args.tag || "design" }, publicBaseUrl);
+    const scopedArgs = designArgsWithClaimDefaults(args);
+    const result = await generateCharacterZoneImage({ ...scopedArgs, tag: scopedArgs.tag || "design" }, publicBaseUrl);
     return mcpTextResult(result);
   }
 
@@ -2822,7 +2931,8 @@ async function callMcpTool(name, args = {}) {
   }
 
   if (name === "generate_character_sheet") {
-    const out = await generateCharacterSheet({ ...args, tag: args.tag || "design" }, publicBaseUrl);
+    const scopedArgs = designArgsWithClaimDefaults(args);
+    const out = await generateCharacterSheet({ ...scopedArgs, tag: scopedArgs.tag || "design" }, publicBaseUrl);
     return mcpTextResult(out);
   }
 
@@ -2933,7 +3043,12 @@ async function callMcpTool(name, args = {}) {
   throw httpError(404, "tool_not_found", `Unknown MCP tool: ${name}`);
 }
 
-const SCOPED_MCP_TOOLS = new Set(["deliver_character_zone", "deliver_character_sheet"]);
+const SCOPED_MCP_TOOLS = new Set([
+  "design_iterate",
+  "generate_character_sheet",
+  "deliver_character_zone",
+  "deliver_character_sheet",
+]);
 
 async function handleMcpRpc(message, scope = {}) {
   const id = message?.id;
@@ -3005,8 +3120,8 @@ function mcpBearer(req) {
 }
 
 // A scoped JSON-RPC message is permitted for a claim-token bearer when it is
-// one of the handshake methods, a tools/list, or a tools/call for the single
-// deliver_character_zone tool with a valid claim (bearer claim or claim_token arg).
+// one of the handshake methods, a tools/list, or a tools/call for the small
+// claim-scoped design tool set with a valid claim (bearer claim or claim_token arg).
 function scopedMcpMessageAllowed(message, bearerClaim) {
   const method = message?.method;
   if (method === "initialize" || method === "ping" || method === "notifications/initialized" || method === "tools/list") {
@@ -3070,8 +3185,8 @@ async function handleMcp(req, res, url) {
 
   if (!master) {
     // Scoped access: the caller must present a valid claim (bearer claim token or
-    // a claim_token argument on a deliver call), and every message in the batch
-    // must be allowed for that scoped claim-token caller.
+    // a claim_token argument on a scoped design call), and every message in the
+    // batch must be allowed for that scoped claim-token caller.
     const presentsClaim =
       Boolean(bearerClaim) ||
       batch.some((message) => {

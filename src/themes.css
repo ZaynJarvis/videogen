@@ -1030,12 +1030,26 @@ a{color:inherit;text-decoration:none}
 .zouk-studio-message-context-row,.zouk-studio-context-preview div{display:grid;grid-template-columns:70px minmax(0,1fr);gap:8px}
 .zouk-studio-message-context span,.zouk-studio-context-preview span{text-transform:uppercase;letter-spacing:.12em;color:var(--accent)}
 .zouk-studio-message-context strong,.zouk-studio-context-preview strong{font-weight:400;color:var(--fg-2);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.zouk-studio-replies{
-  display:flex;flex-direction:column;gap:4px;padding-left:8px;border-left:1px solid var(--line);
+.zouk-studio-thread{
+  display:flex;flex-direction:column;gap:6px;margin-top:6px;padding-left:8px;border-left:1px solid var(--line);
   font-size:11px;color:var(--fg-3);line-height:1.4;
 }
-.zouk-studio-replies div{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:260px}
-.zouk-studio-replies strong{color:var(--fg-2);font-weight:600}
+.zouk-studio-thread-toggle,.zouk-studio-thread-preview{
+  appearance:none;border:0;background:transparent;color:inherit;font:inherit;text-align:left;padding:0;cursor:pointer;
+}
+.zouk-studio-thread-toggle{
+  display:flex;align-items:center;justify-content:space-between;gap:8px;max-width:260px;color:var(--accent);
+}
+.zouk-studio-thread-preview{
+  display:grid;grid-template-columns:auto minmax(0,1fr);gap:6px;max-width:260px;
+}
+.zouk-studio-thread-preview strong{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-weight:400;color:var(--fg-3)}
+.zouk-studio-thread-body{display:flex;flex-direction:column;gap:8px;max-width:300px}
+.zouk-studio-thread-reply{display:flex;flex-direction:column;gap:3px;padding:7px 8px;border-radius:10px;background:rgba(255,255,255,.035)}
+.zouk-studio-thread-reply>strong,.zouk-studio-thread-preview span{color:var(--fg-2);font-weight:600}
+.zouk-studio-thread-reply .zouk-studio-message-text{white-space:pre-wrap;overflow-wrap:anywhere;color:var(--fg-2)}
+.zouk-studio-thread-state{color:var(--fg-3)}
+.zouk-studio-thread-state.is-error{color:#ff8d8d}
 .zouk-studio-composer{
   flex:0 0 auto;padding:10px 12px 12px;border-top:1px solid var(--line);background:rgba(11,11,10,.72);
 }

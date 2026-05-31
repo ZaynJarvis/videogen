@@ -860,7 +860,17 @@ export function CharacterDesignPage() {
     const zonesPayload = charZones.map((z) => ({ id: z.id, label: z.label, prompt: z.prompt || z.improvement || z.role }));
     try {
       const claim = await fetchJson("/api/character-design/claim", { method: "POST", headers: { "content-type": "application/json" },
-        body: JSON.stringify({ character_id: character.id, kind: "sheet", label: character.shortName, zones: zonesPayload, grid: { rows: 3, cols: 3 } }) });
+        body: JSON.stringify({
+          character_id: character.id,
+          character_name: character.name,
+          kind: "sheet",
+          label: character.shortName,
+          source_image_url: sourceUrl,
+          identity_contract: character.identityContract,
+          negative_prompt: character.negativePrompt,
+          zones: zonesPayload,
+          grid: { rows: 3, cols: 3 },
+        }) });
       const improvement = `Build ${character.name}'s full 9-zone identity set from the reference. Keep one consistent identity across all views.`;
       const message = `@luna please generate ${character.name}'s character identity views from the reference image, then deliver them back to Studio.`;
       updateCharacterDesign(character.id, (current) => ({ meta: current.meta || savedMeta?.meta, sheetRequestedAt: Date.now() }));
@@ -1054,7 +1064,15 @@ export function CharacterDesignPage() {
     try {
       const claim = await fetchJson("/api/character-design/claim", {
         method: "POST", headers: { "content-type": "application/json" },
-        body: JSON.stringify({ character_id: selectedCharacter.id, zone_id: activeZone.id, label: activeZone.label }),
+        body: JSON.stringify({
+          character_id: selectedCharacter.id,
+          character_name: selectedCharacter.name,
+          zone_id: activeZone.id,
+          label: activeZone.label,
+          source_image_url: sourceImage,
+          identity_contract: selectedCharacter.identityContract,
+          negative_prompt: selectedCharacter.negativePrompt,
+        }),
       });
       updateCharacterDesign(selectedCharacter.id, (current) => ({
         meta: current.meta || saved.meta,

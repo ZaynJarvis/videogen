@@ -109,6 +109,8 @@ function normalizeMessage(message) {
     channelName: message.channelName || message.channel_name || '',
     channelType: message.channelType || message.channel_type || 'channel',
     parentChannelName: message.parentChannelName || message.parent_channel_name || '',
+    parentMessageId: message.parentMessageId || message.parent_message_id || '',
+    threadId: message.threadId || message.thread_id || '',
     replyCount: Number(message.replyCount ?? message.reply_count ?? rawReplies.length) || 0,
     replies: rawReplies.map(normalizeMessage).filter(Boolean),
     avatarUrl: normalizeAvatarUrl(
@@ -149,14 +151,42 @@ function mergeMessage(messages, incoming) {
 
 function mergeThreadReply(messages, reply) {
   if (!reply?.id || isSystemMessage(reply)) return messages;
+  const threadId = reply.threadId || reply.channelName || '';
+  const parentId = reply.parentMessageId || '';
   return messages.map((message) => {
     const replies = Array.isArray(message.replies) ? message.replies : [];
     if (replies.some((item) => item.id === reply.id)) return message;
-    if (reply.channelType !== 'thread') return message;
+    const matchesParent = parentId
+      ? message.id === parentId
+      : String(message.id || '').slice(0, 8) === threadId || String(reply.channelName || '').includes(String(message.id || '').slice(0, 8));
+    if (reply.channelType !== 'thread' || !matchesParent) return message;
     if (reply.parentChannelName && reply.parentChannelName !== CONFIG.channel) return message;
-    if (!String(reply.channelName || '').includes(String(message.id || '').slice(0, 8))) return message;
-    return { ...message, replies: [...replies, reply].slice(-3), replyCount: Math.max((message.replyCount || 0) + 1, replies.length + 1) };
+    const nextReplies = [...replies, reply].slice(-3);
+    return { ...message, replies: nextReplies, replyCount: Math.max((message.replyCount || 0) + 1, nextReplies.length) };
   });
+}
+
+function threadTargetForMessage(message) {
+  return `#${CONFIG.channel}:${String(message?.id || '').slice(0, 8)}`;
+}
+
+function threadStateKeyForReply(reply, states = {}) {
+  if (reply.parentMessageId) return reply.parentMessageId;
+  const threadId = reply.threadId || reply.channelName || '';
+  return Object.keys(states).find((key) => key.slice(0, 8) === threadId) || '';
+}
+
+function mergeThreadStateReply(states, reply) {
+  const key = threadStateKeyForReply(reply, states);
+  const current = key ? states[key] : null;
+  if (!current?.messages || current.messages.some((item) => item.id === reply.id)) return states;
+  return {
+    ...states,
+    [key]: {
+      ...current,
+      messages: [...current.messages, reply],
+    },
+  };
 }
 
 function mergeAgents(current, incoming) {
@@ -221,9 +251,9 @@ function buildMcpDeliveryBlock(mcp, sourceImage, improvement) {
       lines.push(`  Zones (in order, grid ${rows}x${cols}):`);
       zoneLines.forEach((zoneLine) => lines.push(zoneLine));
     }
-    lines.push(`  Steps for you, the agent: (1) use your imagegen tool to produce ${zones.length || rows * cols} consistent identity views of the SAME subject from source-image (you may compose them as one ${rows}x${cols} contact sheet); (2) upload to a public URL (your cloud); (3) call the MCP server at endpoint, Authorization: Bearer &lt;token&gt;, JSON-RPC tools/call, EITHER (a) name "deliver_character_sheet" arguments { "claim_token":"&lt;token&gt;", "sheet_image_url":"&lt;your public ${rows}x${cols} sheet url&gt;" } and Studio will crop it into the zones, OR (b) name "deliver_character_zone" arguments { "claim_token":"&lt;token&gt;", "zone_id":"&lt;zone id&gt;", "image_url":"&lt;your public url&gt;" } once per zone using these zone ids: [${escapeContextText(zoneIds, 600)}]. The token covers all zones until done and expires in 30 min.`);
+    lines.push(`  Steps for you, the agent: (1) call the Studio MCP server at endpoint with Authorization: Bearer &lt;token&gt;, JSON-RPC tools/call name "generate_character_sheet" arguments { "claim_token":"&lt;token&gt;", "source_image_url":"&lt;source-image&gt;", "output":"zones", "return_zones":true, "zones":[the zone objects above] }. This tool sends source-image as a real image reference to the image model; do not replace it with a text-only description. (2) For each returned zone image, call tools/call name "deliver_character_zone" arguments { "claim_token":"&lt;token&gt;", "zone_id":"&lt;zone id&gt;", "image_url":"&lt;returned image url&gt;" }. (3) If generate_character_sheet is unavailable, you may use your own imagegen, but you MUST attach/download source-image as an actual visual reference input and preserve the same identity; then deliver either each zone with deliver_character_zone or one ${rows}x${cols} sheet with deliver_character_sheet arguments { "claim_token":"&lt;token&gt;", "sheet_image_url":"&lt;your public ${rows}x${cols} sheet url&gt;" }. Zone ids: [${escapeContextText(zoneIds, 600)}]. The token covers all zones until done and expires in 30 min.`);
   } else {
-    lines.push('  Steps for you, the agent: (1) use your imagegen tool with the source-image and the improvement to produce the improved image; (2) upload it to a public URL (your cloud); (3) call the MCP server at endpoint, Authorization: Bearer &lt;token&gt;, JSON-RPC tools/call name "deliver_character_zone" arguments { "claim_token":"&lt;token&gt;", "image_url":"&lt;your public url&gt;" }. The token is single-use and expires in 30 min. Deliver exactly one final image.');
+    lines.push('  Steps for you, the agent: (1) call the Studio MCP server at endpoint with Authorization: Bearer &lt;token&gt;, JSON-RPC tools/call name "design_iterate" arguments { "claim_token":"&lt;token&gt;", "source_image_url":"&lt;source-image&gt;", "instruction":"&lt;improvement&gt;" }. This tool sends source-image as a real image reference to the image model; do not replace it with a text-only description. (2) Call tools/call name "deliver_character_zone" arguments { "claim_token":"&lt;token&gt;", "image_url":"&lt;returned image url&gt;" }. If design_iterate is unavailable, use your own imagegen with source-image attached as an actual visual reference, upload it to a public URL, then deliver exactly one final image. The token is single-use and expires in 30 min.');
   }
   lines.push('  </deliver-via-mcp>');
   return lines.join('\n');
@@ -326,6 +356,57 @@ function MessageBody({ content }) {
   );
 }
 
+function previewThreadContent(content) {
+  const parsed = parseInjectedMessage(content);
+  return compactText(parsed.body || content, 220);
+}
+
+function ThreadBlock({ message, state, onToggle }) {
+  const inlineReplies = Array.isArray(message.replies) ? message.replies : [];
+  const stateReplies = Array.isArray(state?.messages) ? state.messages : [];
+  const availableReplies = stateReplies.length ? stateReplies : inlineReplies;
+  const replyCount = message.replyCount || availableReplies.length || 0;
+  if (!replyCount) return null;
+  const expanded = Boolean(state?.open);
+  const replies = expanded ? availableReplies : availableReplies.slice(-1);
+  const label = replyCount === 1 ? '1 reply' : `${replyCount} replies`;
+  return (
+    <div className={`zouk-studio-thread${expanded ? ' is-expanded' : ''}`}>
+      <button
+        type="button"
+        className="zouk-studio-thread-toggle"
+        onClick={() => onToggle(message)}
+        aria-expanded={expanded}
+      >
+        <span>{expanded ? 'Hide thread' : label}</span>
+        <span aria-hidden="true">{expanded ? '-' : '+'}</span>
+      </button>
+      {expanded ? (
+        <div className="zouk-studio-thread-body">
+          {state?.loading ? <div className="zouk-studio-thread-state">Loading thread...</div> : null}
+          {state?.error ? <div className="zouk-studio-thread-state is-error">{state.error}</div> : null}
+          {!state?.loading && replies.map((reply) => (
+            <div className="zouk-studio-thread-reply" key={reply.id}>
+              <strong>{reply.senderName}</strong>
+              <MessageBody content={reply.content} />
+            </div>
+          ))}
+        </div>
+      ) : replies.length ? (
+        <button
+          type="button"
+          className="zouk-studio-thread-preview"
+          onClick={() => onToggle(message)}
+          aria-label={`Expand ${label}`}
+        >
+          <span>{replies[0].senderName}</span>
+          <strong>{previewThreadContent(replies[0].content)}</strong>
+        </button>
+      ) : null}
+    </div>
+  );
+}
+
 function ContextPreview({ sourceUrl, referencedText, includeUrl }) {
   const reference = compactText(referencedText, 180);
   return (
@@ -361,6 +442,7 @@ export function ZoukStudioChat({ route }) {
   const [error, setError] = useState('');
   const [messages, setMessages] = useState([]);
   const [agents, setAgents] = useState([]);
+  const [threadStates, setThreadStates] = useState({});
   const [composer, setComposer] = useState('');
   const [selectedText, setSelectedText] = useState('');
   const [sourceUrl, setSourceUrl] = useState(currentSourceUrl);
@@ -491,6 +573,7 @@ export function ZoukStudioChat({ route }) {
           const next = normalizeMessage(packet.message);
           if (next?.channelType === 'thread') {
             setMessages((prev) => mergeThreadReply(prev, next));
+            setThreadStates((prev) => mergeThreadStateReply(prev, next));
           } else if (next?.channelName === CONFIG.channel) {
             setMessages((prev) => mergeMessage(prev, next));
           }
@@ -524,6 +607,66 @@ export function ZoukStudioChat({ route }) {
     }, 0);
     return () => window.clearTimeout(timer);
   }, [route?.path]);
+
+  const loadThreadMessages = useCallback(async (parentMessage) => {
+    const parentId = parentMessage?.id;
+    if (!parentId) return;
+    if (!token) {
+      setThreadStates((prev) => ({
+        ...prev,
+        [parentId]: { ...(prev[parentId] || {}), open: true, loading: false, error: 'Connect before loading thread.' },
+      }));
+      return;
+    }
+    setThreadStates((prev) => ({
+      ...prev,
+      [parentId]: { ...(prev[parentId] || {}), open: true, loading: true, error: '' },
+    }));
+    try {
+      const res = await fetch(`${CONFIG.serverUrl}/api/messages`, {
+        headers: {
+          ...authHeaders,
+          'X-Channel': threadTargetForMessage(parentMessage),
+          'X-Limit': '100',
+        },
+        cache: 'no-store',
+      });
+      const body = await parseJsonResponse(res);
+      const threadMessages = (body.messages || []).map(normalizeMessage).filter(Boolean);
+      setThreadStates((prev) => ({
+        ...prev,
+        [parentId]: { ...(prev[parentId] || {}), open: true, loading: false, error: '', messages: threadMessages },
+      }));
+    } catch (err) {
+      setThreadStates((prev) => ({
+        ...prev,
+        [parentId]: {
+          ...(prev[parentId] || {}),
+          open: true,
+          loading: false,
+          error: err instanceof Error ? err.message : 'Failed to load thread.',
+        },
+      }));
+    }
+  }, [authHeaders, token]);
+
+  const toggleThread = useCallback((parentMessage) => {
+    const parentId = parentMessage?.id;
+    if (!parentId) return;
+    const current = threadStates[parentId];
+    if (current?.open) {
+      setThreadStates((prev) => ({
+        ...prev,
+        [parentId]: { ...prev[parentId], open: false },
+      }));
+      return;
+    }
+    setThreadStates((prev) => ({
+      ...prev,
+      [parentId]: { ...(prev[parentId] || {}), open: true, loading: !prev[parentId]?.messages, error: '' },
+    }));
+    if (!current?.messages) loadThreadMessages(parentMessage);
+  }, [loadThreadMessages, threadStates]);
 
   const sendComposedMessage = useCallback(async (rawMessage, context = {}) => {
     const trimmed = String(rawMessage || '').trim();
@@ -661,13 +804,11 @@ export function ZoukStudioChat({ route }) {
                     <div className="zouk-studio-bubble">
                       <MessageBody content={message.content} />
                     </div>
-                    {message.replyCount ? (
-                      <div className="zouk-studio-replies">
-                        {(message.replies || []).slice(-2).map((reply) => (
-                          <div key={reply.id}><strong>{reply.senderName}</strong> {parseInjectedMessage(reply.content).body}</div>
-                        ))}
-                      </div>
-                    ) : null}
+                    <ThreadBlock
+                      message={message}
+                      state={threadStates[message.id]}
+                      onToggle={toggleThread}
+                    />
                   </div>
                 </article>
               );
