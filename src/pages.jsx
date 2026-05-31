@@ -1743,10 +1743,10 @@ function DurationSlider({ value, onChange, min, max }) {
             opacity: 0, height: 20, cursor: "pointer", margin: 0,
           }}/>
         <div style={{
-          position: "absolute", left: `calc(${pct}% - 8px)`, top: 4,
+          position: "absolute", left: `clamp(8px, ${pct}%, calc(100% - 8px))`, top: 4,
           width: 16, height: 16, borderRadius: "50%", background: "var(--fg)",
           border: "3px solid var(--accent)", pointerEvents: "none",
-          boxShadow: "0 1px 4px rgba(0,0,0,.3)",
+          boxShadow: "0 1px 4px rgba(0,0,0,.3)", transform: "translateX(-50%)",
         }}/>
       </div>
       <div style={{ display: "flex", justifyContent: "space-between", marginTop: 4 }}>
