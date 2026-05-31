@@ -1,5 +1,4 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { createPortal } from 'react-dom';
 
 const CONFIG = {
   serverUrl: (import.meta.env.VITE_ZOUK_SERVER_URL || 'https://zouk.zaynjarvis.com').replace(/\/+$/, ''),
@@ -447,7 +446,6 @@ export function ZoukStudioChat({ route }) {
   const [selectedText, setSelectedText] = useState('');
   const [sourceUrl, setSourceUrl] = useState(currentSourceUrl);
   const [lastContextUrl, setLastContextUrl] = useState('');
-  const [headerSlot, setHeaderSlot] = useState(null);
   const scrollRef = useRef(null);
   const textareaRef = useRef(null);
   const wsRef = useRef(null);
@@ -528,13 +526,6 @@ export function ZoukStudioChat({ route }) {
     if (open) setOpen(false);
     else openChat();
   }, [open, openChat]);
-
-  useEffect(() => {
-    const timer = window.setTimeout(() => {
-      setHeaderSlot(document.getElementById('zouk-studio-chat-slot'));
-    }, 0);
-    return () => window.clearTimeout(timer);
-  }, []);
 
   useEffect(() => {
     if (!open || token || status === 'connecting' || status === 'error') return undefined;
@@ -771,7 +762,7 @@ export function ZoukStudioChat({ route }) {
 
   return (
     <>
-      {headerSlot ? createPortal(launcher, headerSlot) : null}
+      {launcher}
       {open ? (
         <aside className="zouk-studio-panel" aria-label="Studio chat">
           <header className="zouk-studio-panel-head">
