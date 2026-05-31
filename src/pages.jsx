@@ -720,6 +720,24 @@ export function CharacterDesignPage() {
           if (!id || seenDeliveriesRef.current.has(id)) continue;
           seenDeliveriesRef.current.add(id);
           const characterId = delivery.character_id;
+          if (delivery.kind === "sheet" && delivery.sheet?.url) {
+            const sheet = delivery.sheet;
+            const grid = sheet.grid || { rows: 3, cols: 3 };
+            const zoneList = (sheet.zones || []).map((z, i) => ({ zone_id: z.id || z.zone_id, index: i, row: Math.floor(i / (grid.cols || 3)), col: i % (grid.cols || 3) }));
+            if (!state.characterDesigns?.[characterId] || !zoneList.length) continue;
+            const sheetSrc = `/api/character-design/sheet-proxy?url=${encodeURIComponent(sheet.url)}`;
+            try {
+              const crops = await cropSheetToCells(sheetSrc, grid, zoneList);
+              const byZone = {};
+              for (const crop of crops) {
+                const remote = await uploadImageAsset({ src: crop.dataUrl, name: `bot-${crop.zone_id}.jpg` }, "design");
+                byZone[crop.zone_id] = { url: remote.src || remote.url, name: remote.name, imageId: remote.id || null, updatedAt: Date.now(), note: "Bot sheet", model: "bot", temporary: Boolean(remote.temporary) };
+              }
+              updateCharacterDesign(characterId, (current) => ({ meta: { ...(current.meta), generatedSheet: sheet.url }, zones: { ...(current.zones || {}), ...byZone } }));
+              show("luna delivered the identity sheet");
+            } catch { show("Bot sheet could not be cropped"); }
+            continue;
+          }
           const zoneId = delivery.zone_id;
           const image = delivery.image || {};
           if (!characterId || !zoneId || !image.url) continue;
@@ -766,8 +784,8 @@ export function CharacterDesignPage() {
     navigate("/design", { character: selectedCharacter.id, zone: zoneId });
   };
 
-  // ── Generate ONE 3×3 sheet, then crop client-side into the 9 zones ──
-  const runSheetGeneration = async (character, savedMeta) => {
+  // ── Generate ONE 3×3 sheet on the server, then crop client-side into the 9 zones (fallback) ──
+  const runSheetGenerationOnServer = async (character, savedMeta) => {
     const sourceUrl = savedMeta?.meta?.source || character.source || character.sourceCard;
     if (!sourceUrl || !/^https?:\/\//i.test(String(sourceUrl))) { show("Upload a source image first"); return; }
     if (generatingSheetId) return;
@@ -834,6 +852,30 @@ export function CharacterDesignPage() {
     }
   };
 
+  // ── Generate via luna: mint a sheet claim, dispatch compose with MCP delivery info ──
+  const runSheetGeneration = async (character, savedMeta) => {
+    const sourceUrl = savedMeta?.meta?.source || character.source || character.sourceCard;
+    if (!sourceUrl || !/^https?:\/\//i.test(String(sourceUrl))) { show("Upload a source image first"); return; }
+    const charZones = mergeCharacterZones(character, savedMeta);
+    const zonesPayload = charZones.map((z) => ({ id: z.id, label: z.label, prompt: z.prompt || z.improvement || z.role }));
+    try {
+      const claim = await fetchJson("/api/character-design/claim", { method: "POST", headers: { "content-type": "application/json" },
+        body: JSON.stringify({ character_id: character.id, kind: "sheet", label: character.shortName, zones: zonesPayload, grid: { rows: 3, cols: 3 } }) });
+      const improvement = `Build ${character.name}'s full 9-zone identity set from the reference. Keep one consistent identity across all views.`;
+      const message = `@luna please generate ${character.name}'s character identity views from the reference image, then deliver them back to Studio.`;
+      updateCharacterDesign(character.id, (current) => ({ meta: current.meta || savedMeta?.meta, sheetRequestedAt: Date.now() }));
+      window.dispatchEvent(new CustomEvent("studio:zouk-compose", { detail: {
+        message, autoSend: true,
+        sourceUrl: characterDesignDeepLink(character.id, charZones[0]?.id),
+        sourceImage: sourceUrl, improvement,
+        mcp: { endpoint: claim.mcp_url, token: claim.token, tool: "deliver_character_sheet", kind: "sheet", zones: zonesPayload, grid: { rows: 3, cols: 3 } },
+      } }));
+      show(`Sent ${character.shortName} to luna`);
+    } catch (error) {
+      show(error.message || "Could not reach the bot");
+    }
+  };
+
   const createCharacterFromUpload = async (img) => {
     if (addingCharacter) return;
     setAddingCharacter(true);
@@ -852,9 +894,9 @@ export function CharacterDesignPage() {
       updateCharacterDesign(meta.id, { meta, activeZoneId: "full_front", zones: {} });
       setNewCharacterName("");
       navigate("/design", { character: meta.id, zone: "full_front" });
-      show(`Generating ${meta.shortName}'s identity grid…`);
+      show(`Sent ${meta.shortName} to luna to build the identity set`);
       const builtCharacter = characterFromMeta(meta);
-      // fire and forget; runSheetGeneration manages its own flag + toasts
+      // fire and forget; runSheetGeneration sends to luna + toasts
       runSheetGeneration(builtCharacter, { meta, zones: {} });
     } catch (error) {
       show(error.message || "Character upload failed");
@@ -1176,14 +1218,23 @@ export function CharacterDesignPage() {
               <h2 className="display">Identity zones</h2>
               <span className="mono muted-2">{String(zones.length).padStart(2, "0")}</span>
             </div>
-            <button
-              className="btn btn-primary character-zone-generate"
-              onClick={() => runSheetGeneration(selectedCharacter, saved)}
-              disabled={Boolean(generatingSheetId)}
-            >
-              {sheetGenerating ? <span className="spinner" /> : <Icon name="sparkle" size={14} />}
-              {sheetGenerating ? (sheetStatusText || "Generating…") : (updatedZones ? "Regenerate sheet" : "Generate sheet")}
-            </button>
+            <div className="character-zone-generate-actions">
+              <button
+                className="btn btn-primary character-zone-generate"
+                onClick={() => runSheetGeneration(selectedCharacter, saved)}
+              >
+                <Icon name="sparkle" size={14} />
+                <Icon name="message" size={14} /> Generate with luna
+              </button>
+              <button
+                className="btn btn-ghost character-zone-generate-server"
+                onClick={() => runSheetGenerationOnServer(selectedCharacter, saved)}
+                disabled={Boolean(generatingSheetId)}
+              >
+                {sheetGenerating ? <span className="spinner" /> : <Icon name="sparkle" size={14} />}
+                {sheetGenerating ? (sheetStatusText || "Generating…") : "Server sheet"}
+              </button>
+            </div>
           </div>
           <div className={"character-zone-grid" + (sheetGenerating ? " generating" : "")}>
             {zones.map((zone) => (
@@ -1246,14 +1297,14 @@ export function CharacterDesignPage() {
           </div>
 
           <div className="character-model-actions">
-            <button className="btn btn-primary" onClick={improveZoneWithModel} disabled={Boolean(generatingZone || replacingZone)}>
-              {activeGenerating ? <span className="spinner" /> : <Icon name="sparkle" size={14} />} Improve image
+            <button className="btn btn-primary" onClick={askBot} disabled={Boolean(generatingZone)}>
+              <Icon name="message" size={14} /> Ask bot
             </button>
           </div>
 
           <div className="character-bot-actions">
-            <button className="btn" onClick={askBot} disabled={Boolean(generatingZone)}>
-              <Icon name="message" size={14} /> Ask bot
+            <button className="btn btn-ghost" onClick={improveZoneWithModel} disabled={Boolean(generatingZone || replacingZone)}>
+              {activeGenerating ? <span className="spinner" /> : <Icon name="sparkle" size={14} />} Server improve
             </button>
             <button className="btn" onClick={copyPrompt}>
               <Icon name="copy" size={14} /> Copy prompt

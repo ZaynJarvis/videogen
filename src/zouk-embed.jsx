@@ -204,13 +204,27 @@ function escapeContextAttr(value = '', limit = 1600) {
 function buildMcpDeliveryBlock(mcp, sourceImage, improvement) {
   const endpoint = compactText(mcp?.endpoint, 1600);
   const token = compactText(mcp?.token, 200);
-  const tool = compactText(mcp?.tool, 120) || 'deliver_character_zone';
+  const kind = compactText(mcp?.kind, 40) || 'zone';
+  const tool = compactText(mcp?.tool, 120) || (kind === 'sheet' ? 'deliver_character_sheet' : 'deliver_character_zone');
   if (!endpoint || !token) return null;
   const lines = [];
   if (sourceImage) lines.push(`  <source-image>${escapeContextText(sourceImage, 1600)}</source-image>`);
   if (improvement) lines.push(`  <improvement>${escapeContextText(improvement)}</improvement>`);
-  lines.push(`  <deliver-via-mcp endpoint="${escapeContextAttr(endpoint)}" token="${escapeContextAttr(token, 200)}" tool="${escapeContextAttr(tool, 120)}">`);
-  lines.push('  Steps for you, the agent: (1) use your imagegen tool with the source-image and the improvement to produce the improved image; (2) upload it to a public URL (your cloud); (3) call the MCP server at endpoint, Authorization: Bearer &lt;token&gt;, JSON-RPC tools/call name "deliver_character_zone" arguments { "claim_token":"&lt;token&gt;", "image_url":"&lt;your public url&gt;" }. The token is single-use and expires in 30 min. Deliver exactly one final image.');
+  lines.push(`  <deliver-via-mcp endpoint="${escapeContextAttr(endpoint)}" token="${escapeContextAttr(token, 200)}" tool="${escapeContextAttr(tool, 120)}" kind="${escapeContextAttr(kind, 40)}">`);
+  if (kind === 'sheet') {
+    const zones = Array.isArray(mcp?.zones) ? mcp.zones : [];
+    const rows = Number(mcp?.grid?.rows) || 3;
+    const cols = Number(mcp?.grid?.cols) || 3;
+    const zoneLines = zones.map((zone, index) => `  ${index + 1}. ${escapeContextText(zone?.id || zone?.zone_id || '', 80)} — ${escapeContextText(zone?.prompt || zone?.label || zone?.role || '', 200)}`);
+    const zoneIds = zones.map((zone) => compactText(zone?.id || zone?.zone_id || '', 80)).filter(Boolean).join(', ');
+    if (zoneLines.length) {
+      lines.push(`  Zones (in order, grid ${rows}x${cols}):`);
+      zoneLines.forEach((zoneLine) => lines.push(zoneLine));
+    }
+    lines.push(`  Steps for you, the agent: (1) use your imagegen tool to produce ${zones.length || rows * cols} consistent identity views of the SAME subject from source-image (you may compose them as one ${rows}x${cols} contact sheet); (2) upload to a public URL (your cloud); (3) call the MCP server at endpoint, Authorization: Bearer &lt;token&gt;, JSON-RPC tools/call, EITHER (a) name "deliver_character_sheet" arguments { "claim_token":"&lt;token&gt;", "sheet_image_url":"&lt;your public ${rows}x${cols} sheet url&gt;" } and Studio will crop it into the zones, OR (b) name "deliver_character_zone" arguments { "claim_token":"&lt;token&gt;", "zone_id":"&lt;zone id&gt;", "image_url":"&lt;your public url&gt;" } once per zone using these zone ids: [${escapeContextText(zoneIds, 600)}]. The token covers all zones until done and expires in 30 min.`);
+  } else {
+    lines.push('  Steps for you, the agent: (1) use your imagegen tool with the source-image and the improvement to produce the improved image; (2) upload it to a public URL (your cloud); (3) call the MCP server at endpoint, Authorization: Bearer &lt;token&gt;, JSON-RPC tools/call name "deliver_character_zone" arguments { "claim_token":"&lt;token&gt;", "image_url":"&lt;your public url&gt;" }. The token is single-use and expires in 30 min. Deliver exactly one final image.');
+  }
   lines.push('  </deliver-via-mcp>');
   return lines.join('\n');
 }

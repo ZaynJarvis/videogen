@@ -2092,15 +2092,24 @@ async function handleCharacterDesignClaim(req, res) {
   const characterId = String(input.character_id || input.characterId || "").trim();
   const zoneId = String(input.zone_id || input.zoneId || "").trim();
   const label = String(input.label || input.zone_label || input.zoneLabel || "").trim();
-  if (!characterId || !zoneId) {
+  const kind = input.kind === "sheet" ? "sheet" : "zone";
+  const zones = Array.isArray(input.zones) ? input.zones : [];
+  const grid = input.grid && typeof input.grid === "object" ? input.grid : { rows: 3, cols: 3 };
+  if (kind === "sheet") {
+    if (!characterId || !zones.length) {
+      throw httpError(400, "claim_target_required", "character_id and a non-empty zones array are required to mint a sheet claim.");
+    }
+  } else if (!characterId || !zoneId) {
     throw httpError(400, "claim_target_required", "character_id and zone_id are required to mint a claim.");
   }
-  const claim = mintDesignClaim(characterId, zoneId, label);
+  const claim = mintDesignClaim(characterId, zoneId, label, { kind, zones, grid });
   const mcpUrl = (publicBaseUrl || requestPublicBaseUrl(req)) + "/mcp";
   sendJson(res, 201, {
     token: claim.token,
     mcp_url: mcpUrl,
+    tools: ["deliver_character_zone", "deliver_character_sheet"],
     tool: "deliver_character_zone",
+    kind,
     expires_in: Math.floor(designClaimTtlMs / 1000),
   });
 }
@@ -2113,8 +2122,10 @@ function handleCharacterDesignInbox(req, res, url) {
     .map((d) => ({
       id: d.id,
       character_id: d.characterId,
+      kind: d.kind || "zone",
       zone_id: d.zoneId,
       image: d.image,
+      sheet: d.sheet,
       note: d.note,
       delivered_at: d.deliveredAt,
     }));
@@ -2472,17 +2483,24 @@ function pruneDesignState(now = Date.now()) {
   }
 }
 
-function mintDesignClaim(characterId, zoneId, label) {
+function mintDesignClaim(characterId, zoneId, label, opts = {}) {
   const now = Date.now();
+  const kind = opts.kind === "sheet" ? "sheet" : "zone";
+  const zones = Array.isArray(opts.zones) ? opts.zones : [];
+  const grid = opts.grid && typeof opts.grid === "object" ? opts.grid : { rows: 3, cols: 3 };
   const claim = {
     token: "clm_" + randomUUID().replace(/-/g, "").slice(0, 24),
     characterId: String(characterId || "").trim(),
     zoneId: String(zoneId || "").trim(),
     label: String(label || zoneId || "").trim(),
+    kind,
+    zones,
+    grid,
     createdAt: now,
     expiresAt: now + designClaimTtlMs,
     used: false,
   };
+  if (kind === "sheet") claim.zonesDone = {};
   designClaims.set(claim.token, claim);
   return claim;
 }
@@ -2493,12 +2511,40 @@ function resolveDesignClaim(token) {
   pruneDesignState();
   const claim = designClaims.get(key);
   if (!claim) return null;
+  if (claim.expiresAt <= Date.now()) {
+    designClaims.delete(key);
+    return null;
+  }
+  if (claim.kind === "sheet") {
+    const zones = Array.isArray(claim.zones) ? claim.zones : [];
+    const done = claim.zonesDone || {};
+    if (claim.used) return null;
+    if (zones.length > 0 && zones.every((zone) => done[String(zone.id || "")])) return null;
+    return claim;
+  }
   if (claim.used) return null;
+  return claim;
+}
+
+// Recognizes a claim-token bearer that exists and has not timed out, even if it
+// is exhausted (all zones done / used). Lets a scoped deliver call reach the
+// tool handler so it can return the authoritative error (e.g. 400
+// zone_not_in_claim) instead of the generic preflight 401.
+function lookupKnownClaim(token) {
+  const key = String(token || "").trim();
+  if (!key) return null;
+  pruneDesignState();
+  const claim = designClaims.get(key);
+  if (!claim) return null;
   if (claim.expiresAt <= Date.now()) {
     designClaims.delete(key);
     return null;
   }
   return claim;
+}
+
+function claimKnown(token) {
+  return Boolean(lookupKnownClaim(token));
 }
 
 function mcpAuthorized(req, url) {
@@ -2686,6 +2732,22 @@ function mcpTools() {
         additionalProperties: true,
       },
     },
+    {
+      name: "deliver_character_sheet",
+      description: "Deliver ONE finished 3x3 identity contact sheet image back to the Studio website using a single-use claim token; the website crops it into the character's zones. Provide sheet_image_url (public https) or image (data URL).",
+      inputSchema: {
+        type: "object",
+        properties: {
+          claim_token: { type: "string", description: "Single-use claim token issued by the Studio website for one character sheet." },
+          sheet_image_url: { type: "string", description: "Public https URL of the finished contact sheet you uploaded to your cloud." },
+          image_url: { type: "string", description: "Alias for sheet_image_url." },
+          image: { type: "string", description: "Optional JPEG/PNG/WEBP data URL of the finished contact sheet to upload to Cloud instead of a url." },
+          note: { type: "string", description: "Optional note describing the delivery." },
+        },
+        required: ["claim_token"],
+        additionalProperties: true,
+      },
+    },
   ];
 }
 
@@ -2765,14 +2827,32 @@ async function callMcpTool(name, args = {}) {
   }
 
   if (name === "deliver_character_zone") {
-    const claim = resolveDesignClaim(args.claim_token || args.claimToken);
+    const claimToken = args.claim_token || args.claimToken;
+    // Use the recognized (even exhausted) claim to validate zone membership so an
+    // unknown zone_id yields the authoritative 400 rather than a generic 401, then
+    // gate the actual delivery on resolveDesignClaim (claim still live).
+    const knownClaim = lookupKnownClaim(claimToken);
+    if (!knownClaim) {
+      throw httpError(401, "invalid_or_expired_claim", "The claim token is invalid, used, or expired.");
+    }
+    let zoneId;
+    if (knownClaim.kind === "sheet") {
+      zoneId = String(args.zone_id || args.zoneId || "").trim();
+      const zones = Array.isArray(knownClaim.zones) ? knownClaim.zones : [];
+      if (!zoneId || !zones.some((zone) => String(zone.id || "") === zoneId)) {
+        throw httpError(400, "zone_not_in_claim", "zone_id must be one of the zones in this sheet claim.");
+      }
+    } else {
+      zoneId = knownClaim.zoneId;
+    }
+    const claim = resolveDesignClaim(claimToken);
     if (!claim) {
       throw httpError(401, "invalid_or_expired_claim", "The claim token is invalid, used, or expired.");
     }
     let imageUrl = "";
     const dataImage = args.image || args.data_url;
     if (typeof dataImage === "string" && dataImage.startsWith("data:")) {
-      const uploaded = await uploadImageToRepo(dataImage, `bot-${claim.zoneId}.jpg`, "Bot delivery", "design");
+      const uploaded = await uploadImageToRepo(dataImage, `bot-${zoneId}.jpg`, "Bot delivery", "design");
       if (!uploaded?.url) {
         throw httpError(400, "image_invalid", "Image must be a JPEG, PNG, or WEBP data URL.");
       }
@@ -2783,14 +2863,20 @@ async function callMcpTool(name, args = {}) {
         throw httpError(400, "image_url_required", "Provide a public https image_url or an image data URL.");
       }
     }
-    claim.used = true;
+    if (claim.kind === "sheet") {
+      claim.zonesDone = claim.zonesDone || {};
+      claim.zonesDone[zoneId] = true;
+    } else {
+      claim.used = true;
+    }
     const delivery = {
       id: "dlv_" + randomUUID(),
+      kind: "zone",
       characterId: claim.characterId,
-      zoneId: claim.zoneId,
+      zoneId,
       image: {
         url: imageUrl,
-        name: `bot-${claim.zoneId}.jpg`,
+        name: `bot-${zoneId}.jpg`,
         provider: "bot",
         cloud: true,
         temporary: false,
@@ -2800,13 +2886,54 @@ async function callMcpTool(name, args = {}) {
     };
     designDeliveries.push(delivery);
     pruneDesignState();
-    return mcpTextResult({ ok: true, delivered: true, zone_id: claim.zoneId });
+    return mcpTextResult({ ok: true, delivered: true, zone_id: zoneId });
+  }
+
+  if (name === "deliver_character_sheet") {
+    const claim = resolveDesignClaim(args.claim_token || args.claimToken);
+    if (!claim) {
+      throw httpError(401, "invalid_or_expired_claim", "The claim token is invalid, used, or expired.");
+    }
+    const grid = claim.grid && typeof claim.grid === "object" ? claim.grid : { rows: 3, cols: 3 };
+    let url = "";
+    const dataImage = args.image || args.data_url;
+    if (typeof dataImage === "string" && dataImage.startsWith("data:")) {
+      const uploaded = await uploadImageToRepo(dataImage, `bot-sheet-${claim.characterId}.jpg`, "Bot sheet delivery", "design");
+      if (!uploaded?.url) {
+        throw httpError(400, "image_invalid", "Image must be a JPEG, PNG, or WEBP data URL.");
+      }
+      url = uploaded.url;
+    } else {
+      url = String(args.sheet_image_url || args.image_url || args.imageUrl || "").trim();
+      if (!/^https:\/\//i.test(url)) {
+        throw httpError(400, "sheet_image_url_required", "Provide a public https sheet_image_url or an image data URL.");
+      }
+    }
+    const zones = Array.isArray(claim.zones) ? claim.zones : [];
+    claim.zonesDone = claim.zonesDone || {};
+    for (const zone of zones) claim.zonesDone[String(zone.id || "")] = true;
+    claim.used = true;
+    const delivery = {
+      id: "dlv_" + randomUUID(),
+      kind: "sheet",
+      characterId: claim.characterId,
+      sheet: {
+        url,
+        grid,
+        zones: zones.map((zone) => ({ id: zone.id, label: zone.label })),
+      },
+      note: String(args.note || "").trim() || null,
+      deliveredAt: Date.now(),
+    };
+    designDeliveries.push(delivery);
+    pruneDesignState();
+    return mcpTextResult({ ok: true, delivered: true, kind: "sheet", zones: zones.length });
   }
 
   throw httpError(404, "tool_not_found", `Unknown MCP tool: ${name}`);
 }
 
-const SCOPED_MCP_TOOL = "deliver_character_zone";
+const SCOPED_MCP_TOOLS = new Set(["deliver_character_zone", "deliver_character_sheet"]);
 
 async function handleMcpRpc(message, scope = {}) {
   const id = message?.id;
@@ -2836,15 +2963,15 @@ async function handleMcpRpc(message, scope = {}) {
     }
 
     if (method === "tools/list") {
-      const tools = scoped ? mcpTools().filter((tool) => tool.name === SCOPED_MCP_TOOL) : mcpTools();
+      const tools = scoped ? mcpTools().filter((tool) => SCOPED_MCP_TOOLS.has(tool.name)) : mcpTools();
       return { jsonrpc: "2.0", id, result: { tools } };
     }
 
     if (method === "tools/call") {
       const args = { ...(params.arguments || {}) };
       if (scoped) {
-        if (params.name !== SCOPED_MCP_TOOL) {
-          throw httpError(401, "unauthorized", "This claim token may only call deliver_character_zone.");
+        if (!SCOPED_MCP_TOOLS.has(params.name)) {
+          throw httpError(401, "unauthorized", "This claim token may only deliver design results.");
         }
         if (!args.claim_token && !args.claimToken && scope.bearerClaim) {
           args.claim_token = scope.bearerClaim;
@@ -2887,10 +3014,12 @@ function scopedMcpMessageAllowed(message, bearerClaim) {
   }
   if (method === "tools/call") {
     const params = message?.params || {};
-    if (params.name !== SCOPED_MCP_TOOL) return false;
+    if (!SCOPED_MCP_TOOLS.has(params.name)) return false;
     const args = params.arguments || {};
     const token = args.claim_token || args.claimToken || bearerClaim;
-    return Boolean(resolveDesignClaim(token));
+    // A recognized (not timed-out) claim may reach the deliver handler so it can
+    // return the authoritative result/error even when the claim is exhausted.
+    return Boolean(resolveDesignClaim(token)) || claimKnown(token);
   }
   return false;
 }
@@ -2898,7 +3027,7 @@ function scopedMcpMessageAllowed(message, bearerClaim) {
 async function handleMcp(req, res, url) {
   const master = mcpAuthorized(req, url);
   const bearer = mcpBearer(req);
-  const bearerClaim = !master && bearer.startsWith("clm_") && resolveDesignClaim(bearer) ? bearer : "";
+  const bearerClaim = !master && bearer.startsWith("clm_") && claimKnown(bearer) ? bearer : "";
 
   if (req.method === "OPTIONS") {
     res.writeHead(204, {
@@ -2917,7 +3046,7 @@ async function handleMcp(req, res, url) {
       sendJson(res, 401, { error: { code: "unauthorized", message: "Invalid MCP token." } });
       return;
     }
-    const advertised = master ? mcpTools() : mcpTools().filter((tool) => tool.name === SCOPED_MCP_TOOL);
+    const advertised = master ? mcpTools() : mcpTools().filter((tool) => SCOPED_MCP_TOOLS.has(tool.name));
     res.writeHead(200, {
       "content-type": "text/event-stream; charset=utf-8",
       "cache-control": "no-cache",
@@ -2947,7 +3076,8 @@ async function handleMcp(req, res, url) {
       Boolean(bearerClaim) ||
       batch.some((message) => {
         const args = message?.params?.arguments || {};
-        return Boolean(resolveDesignClaim(args.claim_token || args.claimToken));
+        const token = args.claim_token || args.claimToken;
+        return Boolean(resolveDesignClaim(token)) || claimKnown(token);
       });
     const allowed =
       presentsClaim &&
