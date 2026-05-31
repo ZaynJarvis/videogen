@@ -2670,13 +2670,14 @@ function mcpTools() {
   return [
     {
       name: "upload_image",
-      description: "Upload a JPEG/PNG/WEBP data URL to Studio's image library. The server stores it in Cloud with IMAGE_REPO_TAG=studio and returns the public image URL.",
+      description: "Upload a JPEG/PNG/WEBP data URL to Studio's image library and return the public Cloud URL. Use this for agent-generated imagegen outputs before delivering them back to a character-design claim.",
       inputSchema: {
         type: "object",
         properties: {
           image: { type: "string", description: "JPEG/PNG/WEBP data URL to upload." },
           data_url: { type: "string", description: "Alias for image." },
           name: { type: "string", description: "Optional filename for the uploaded image." },
+          tag: { type: "string", description: "Cloud tag for the saved image; use design for character-design images.", default: "studio" },
         },
         additionalProperties: true,
       },
@@ -2876,7 +2877,8 @@ async function callMcpTool(name, args = {}) {
     if (!image) {
       throw httpError(400, "image_required", "Image data URL is required.");
     }
-    const uploaded = await uploadImageToRepo(image, args.name || args.filename || "image.jpg", "Image");
+    const tag = String(args.tag || args.cloud_tag || args.cloudTag || "").trim();
+    const uploaded = await uploadImageToRepo(image, args.name || args.filename || "image.jpg", "Image", tag || undefined);
     if (!uploaded) {
       throw httpError(400, "image_invalid", "Image must be a JPEG, PNG, or WEBP data URL.");
     }
@@ -3044,8 +3046,7 @@ async function callMcpTool(name, args = {}) {
 }
 
 const SCOPED_MCP_TOOLS = new Set([
-  "design_iterate",
-  "generate_character_sheet",
+  "upload_image",
   "deliver_character_zone",
   "deliver_character_sheet",
 ]);
