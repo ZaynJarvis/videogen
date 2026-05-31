@@ -20,6 +20,7 @@ export function Icon({ name, size = 16, ...rest }) {
     refresh: <path d="M3 12a9 9 0 0115-6.7L21 8M21 3v5h-5M21 12a9 9 0 01-15 6.7L3 16m0 5v-5h5" stroke="currentColor" strokeWidth="1.6" fill="none" strokeLinecap="round" strokeLinejoin="round"/>,
     grid: <><rect x="3" y="3" width="7" height="7" stroke="currentColor" strokeWidth="1.6" fill="none"/><rect x="14" y="3" width="7" height="7" stroke="currentColor" strokeWidth="1.6" fill="none"/><rect x="3" y="14" width="7" height="7" stroke="currentColor" strokeWidth="1.6" fill="none"/><rect x="14" y="14" width="7" height="7" stroke="currentColor" strokeWidth="1.6" fill="none"/></>,
     message: <><path d="M5 5h14a2 2 0 012 2v8a2 2 0 01-2 2h-6l-5 4v-4H5a2 2 0 01-2-2V7a2 2 0 012-2z" stroke="currentColor" strokeWidth="1.6" fill="none" strokeLinejoin="round"/><path d="M7 9h10M7 13h7" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round"/></>,
+    person: <><circle cx="12" cy="8" r="4" stroke="currentColor" strokeWidth="1.6" fill="none"/><path d="M5 21a7 7 0 0114 0" stroke="currentColor" strokeWidth="1.6" fill="none" strokeLinecap="round"/></>,
   };
   return (
     <svg width={size} height={size} viewBox="0 0 24 24" {...rest}>{paths[name] || null}</svg>

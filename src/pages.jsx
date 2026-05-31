@@ -22,6 +22,8 @@ const INPUT_MODES = [
   { id: "references", label: "References" },
 ];
 
+const CHARACTER_SHEET_WAIT_MS = 30 * 60 * 1000;
+
 const ACTIVE_TASK_STATUSES = new Set([
   "created",
   "queued",
@@ -441,7 +443,7 @@ export function Nav({ route, navigate }) {
     { path: "/", icon: "home", label: "Home", kbd: "1" },
     { path: "/create", icon: "sparkle", label: "Create", kbd: "2" },
     { path: "/library", icon: "grid", label: "Library", kbd: "3" },
-    { path: "/design", icon: "message", label: "Design", kbd: "4" },
+    { path: "/design", icon: "person", label: "Design", kbd: "4" },
   ];
 
   return (
@@ -863,13 +865,17 @@ export function CharacterDesignPage() {
   const [renameDraft, setRenameDraft] = useState("");
   const [reviewOpen, setReviewOpen] = useState(false);
   const [runtimeImage, setRuntimeImage] = useState(null);
+  const [now, setNow] = useState(() => Date.now());
   const activeKey = activeZone ? `${selectedCharacter.id}:${activeZone.id}` : "";
   const activeInstruction = activeZone ? (zoneDrafts[activeKey] ?? activeZone.improvement) : "";
   const activeReferenceDescription = activeZone ? (zoneReferenceDescriptions[activeKey] ?? activeZone.referenceDescription ?? "") : "";
   const uploadMode = query.upload === "1";
   const updatedZones = zones.filter((zone) => zone.updatedAt).length;
-  // Still waiting for luna to deliver some zones after a sheet request.
-  const awaitingSheet = hasCharacter && Boolean(saved.sheetRequestedAt) && updatedZones < zones.length;
+  const sheetRequestedAt = Number(saved.sheetRequestedAt || 0);
+  const sheetRequestActive = sheetRequestedAt > 0 && now - sheetRequestedAt < CHARACTER_SHEET_WAIT_MS;
+  // Still waiting for luna to deliver some zones after a fresh sheet request.
+  const awaitingSheet = hasCharacter && sheetRequestActive && updatedZones < zones.length;
+  const sheetRequestExpired = hasCharacter && sheetRequestedAt > 0 && !sheetRequestActive && updatedZones < zones.length;
 
   // Dock the bot chat as a persistent right rail on desktop /design only.
   useEffect(() => {
@@ -890,6 +896,12 @@ export function CharacterDesignPage() {
     if (!activeZone?.id || saved.activeZoneId === activeZone.id) return;
     updateCharacterDesign(selectedCharacter.id, { activeZoneId: activeZone.id, meta: saved.meta });
   }, [activeZone?.id, saved.activeZoneId, saved.meta, selectedCharacter?.id, updateCharacterDesign]);
+
+  useEffect(() => {
+    if (!hasCharacter || !sheetRequestActive || updatedZones >= zones.length) return undefined;
+    const timer = setInterval(() => setNow(Date.now()), 30_000);
+    return () => clearInterval(timer);
+  }, [hasCharacter, sheetRequestActive, updatedZones, zones.length]);
 
   // ── Inbox polling: apply bot deliveries to the matching zone ──
   const seenDeliveriesRef = useRef(new Set());
@@ -1463,6 +1475,8 @@ export function CharacterDesignPage() {
               >
                 {awaitingSheet
                   ? <><span className="spinner" /> Sent to luna…</>
+                  : sheetRequestExpired
+                    ? <><Icon name="refresh" size={14} /> Retry with luna</>
                   : <><Icon name="sparkle" size={14} /> Generate with luna</>}
               </button>
             </div>
