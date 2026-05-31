@@ -435,7 +435,8 @@ a{color:inherit;text-decoration:none}
 .character-zone-toolbar-title{display:flex;align-items:baseline;gap:10px;min-width:0}
 .character-zone-toolbar-title .display{font-size:24px;margin:0}
 .character-zone-toolbar-title .mono{font-size:11px;letter-spacing:.14em}
-.character-zone-generate{flex:0 0 auto;margin-left:auto}
+.character-zone-generate{flex:0 0 auto}
+.character-zone-generate-actions{display:flex;gap:8px;flex-wrap:wrap;flex:0 0 auto;margin-left:auto;justify-content:flex-end}
 
 /* Uniform SQUARE zone tiles — fixes the "messy grid" */
 .character-zone-grid{
