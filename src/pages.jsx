@@ -769,18 +769,22 @@ function CharacterSourceUploadForm({
   adding,
   description,
   onDescriptionChange,
-  onFile,
   onFiles,
+  stagedImages = [],
+  onRemoveImage,
+  onClearImages,
+  onStart,
   onError,
   phoneView,
   compact = false,
 }) {
+  const count = stagedImages.length;
   return (
     <div className={"character-source-upload" + (adding ? " is-busy" : "") + (compact ? " is-compact" : "")}>
       {adding && (
         <div className="character-upload-busy">
           <span className="spinner" />
-          <span className="mono muted-2">Adding character…</span>
+          <span className="mono muted-2">Starting design…</span>
         </div>
       )}
       <textarea
@@ -793,12 +797,39 @@ function CharacterSourceUploadForm({
         compact={compact}
         multiple
         image={null}
-        onFile={onFile}
+        onFile={(image) => onFiles?.([image])}
         onFiles={onFiles}
         allowDrag={!phoneView}
         onError={onError}
-        hint={adding ? "Adding…" : phoneView ? "Upload source images" : "Drop source images"}
+        hint={adding ? "Starting…" : phoneView ? "Upload source images" : "Drop source images"}
       />
+      {count > 0 && (
+        <div className="character-source-drafts">
+          {stagedImages.map((image) => (
+            <div className="character-source-draft" key={image.id || image.src}>
+              <img src={image.src} alt="" />
+              <strong>{image.name || "source image"}</strong>
+              <button
+                type="button"
+                className="btn btn-icon"
+                title="Remove"
+                onClick={() => onRemoveImage?.(image.id)}
+              >
+                <Icon name="x" size={13} />
+              </button>
+            </div>
+          ))}
+        </div>
+      )}
+      <div className="character-source-actions">
+        <button className="btn btn-primary" type="button" onClick={onStart} disabled={adding || count === 0}>
+          {adding ? <span className="spinner" /> : <Icon name="sparkle" size={14} />} Start design
+        </button>
+        <button className="btn btn-ghost" type="button" onClick={onClearImages} disabled={adding || count === 0}>
+          Clear
+        </button>
+        <span className="mono muted-2">{count} image{count === 1 ? "" : "s"} staged</span>
+      </div>
     </div>
   );
 }
@@ -826,6 +857,7 @@ export function CharacterDesignPage() {
   const [replacingZone, setReplacingZone] = useState("");
   const [addingCharacter, setAddingCharacter] = useState(false);
   const [sourceUploadDescription, setSourceUploadDescription] = useState("");
+  const [sourceUploadDrafts, setSourceUploadDrafts] = useState([]);
   const [zoneReferenceDescriptions, setZoneReferenceDescriptions] = useState({});
   const [renaming, setRenaming] = useState(false);
   const [renameDraft, setRenameDraft] = useState("");
@@ -946,6 +978,11 @@ export function CharacterDesignPage() {
   const runSheetGeneration = async (character, savedMeta) => {
     const sourceUrl = savedMeta?.meta?.source || character.source || character.sourceCard;
     if (!sourceUrl || !/^https?:\/\//i.test(String(sourceUrl))) { show("Upload a source image first"); return; }
+    const sourceReferences = (Array.isArray(savedMeta?.meta?.sourceImages) && savedMeta.meta.sourceImages.length
+      ? savedMeta.meta.sourceImages
+      : [{ src: sourceUrl, url: sourceUrl, name: savedMeta?.meta?.sourceImageName || "source image" }])
+      .filter((image) => image?.src || image?.url)
+      .map((image) => ({ ...image, src: image.src || image.url, url: image.url || image.src }));
     const charZones = mergeCharacterZones(character, savedMeta);
     const zonesPayload = charZones.map((z) => ({ id: z.id, label: z.label, prompt: z.prompt || z.improvement || z.role }));
     try {
@@ -962,66 +999,109 @@ export function CharacterDesignPage() {
           grid: { rows: 3, cols: 3 },
         }) });
       const description = savedMeta?.meta?.sourceDescription ? ` Description: ${savedMeta.meta.sourceDescription}` : "";
-      const improvement = `Build ${character.name}'s full 9-zone identity set from the reference. Keep one consistent identity across all views.${description}`;
+      const referenceText = sourceReferences.length > 1
+        ? ` Use all ${sourceReferences.length} source images together as one unified character reference set.`
+        : "";
+      const improvement = `Build ${character.name}'s full 9-zone identity set from the reference. Keep one consistent identity across all views.${referenceText}${description}`;
       const message = `@luna please generate ${character.name}'s character identity views from the reference image, then deliver them back to Studio.`;
       updateCharacterDesign(character.id, (current) => ({ meta: current.meta || savedMeta?.meta, sheetRequestedAt: Date.now() }));
       window.dispatchEvent(new CustomEvent("studio:zouk-compose", { detail: {
         message, autoSend: true,
         sourceUrl: characterDesignDeepLink(character.id, charZones[0]?.id),
         sourceImage: sourceUrl, improvement,
-        mcp: { endpoint: claim.mcp_url, token: claim.token, tool: "deliver_character_sheet", kind: "sheet", zones: zonesPayload, grid: { rows: 3, cols: 3 } },
+        referenceImages: sourceReferences,
+        mcp: {
+          endpoint: claim.mcp_url,
+          token: claim.token,
+          tool: "deliver_character_sheet",
+          kind: "sheet",
+          zones: zonesPayload,
+          grid: { rows: 3, cols: 3 },
+          referenceImages: sourceReferences.map((image) => image.src || image.url),
+        },
       } }));
       show(`Sent ${character.shortName} to luna`);
+      return true;
     } catch (error) {
       show(error.message || "Could not reach the bot");
+      return false;
     }
   };
 
-  const createCharactersFromUploads = async (images) => {
+  const stageSourceUploads = async (images) => {
+    const additions = (Array.isArray(images) ? images : [images])
+      .filter(Boolean)
+      .map((image, index) => ({
+        ...image,
+        id: `draft_${Date.now()}_${index}_${Math.random().toString(36).slice(2, 7)}`,
+      }));
+    if (!additions.length) return;
+    setSourceUploadDrafts((current) => [...current, ...additions]);
+    show(`${additions.length} source image${additions.length === 1 ? "" : "s"} staged`);
+  };
+
+  const removeSourceDraft = (id) => {
+    setSourceUploadDrafts((current) => current.filter((image) => image.id !== id));
+  };
+
+  const createCharacterFromStagedSources = async () => {
     if (addingCharacter) return;
-    const queue = (Array.isArray(images) ? images : [images]).filter(Boolean);
+    const queue = sourceUploadDrafts.filter(Boolean);
     if (!queue.length) return;
     setAddingCharacter(true);
     try {
-      let firstMeta = null;
       const description = sourceUploadDescription.trim();
+      const sources = [];
       for (const [index, img] of queue.entries()) {
-        const displayName = queue.length > 1
-          ? `${img.name || "Character reference"} ${index + 1}`
-          : (img.name || "Character reference");
         const remote = await uploadImageAsset({
           ...img,
-          name: `character-${img.name || "reference.png"}`,
+          name: `character-source-${index + 1}-${img.name || "reference.png"}`,
         }, "design");
-        const source = addImage({
+        sources.push(addImage({
           ...remote,
-          name: displayName,
+          name: img.name || `Source image ${index + 1}`,
           provider: remote.provider || "cloud",
           tag: remote.tag || "design",
-        });
-        const meta = makeUploadedCharacterMeta(source.name || displayName || "New Character", source);
-        if (description) {
-          meta.sourceDescription = description;
-          meta.spec = [...(meta.spec || []), ["Description", description]];
-          meta.identityContract = [...(meta.identityContract || []), `User description: ${description}`];
-        }
-        updateCharacterDesign(meta.id, { meta, activeZoneId: "full_front", zones: {} });
-        if (!firstMeta) firstMeta = meta;
-        const builtCharacter = characterFromMeta(meta);
-        // fire and forget; runSheetGeneration sends to luna + toasts
-        runSheetGeneration(builtCharacter, { meta, zones: {} });
+        }));
       }
+      const primary = sources[0];
+      const displayName = primary.name || "Character reference";
+      const meta = makeUploadedCharacterMeta(displayName, primary);
+      meta.sourceImages = sources.map((source) => ({
+        id: source.id || source.src,
+        name: source.name,
+        src: source.src,
+        url: source.url || source.src,
+        tag: source.tag || "design",
+        provider: source.provider || "cloud",
+      }));
+      meta.sourceImageName = sources.map((source) => source.name).filter(Boolean).join(", ") || meta.sourceImageName;
+      meta.spec = [
+        ...(meta.spec || []),
+        ["Reference set", `${sources.length} source image${sources.length === 1 ? "" : "s"}`],
+      ];
+      meta.identityContract = [
+        ...(meta.identityContract || []),
+        `Use all ${sources.length} uploaded source image${sources.length === 1 ? "" : "s"} as one unified character reference set.`,
+      ];
+      if (description) {
+        meta.sourceDescription = description;
+        meta.spec = [...(meta.spec || []), ["Description", description]];
+        meta.identityContract = [...(meta.identityContract || []), `User description: ${description}`];
+      }
+      updateCharacterDesign(meta.id, { meta, activeZoneId: "full_front", zones: {} });
+      const builtCharacter = characterFromMeta(meta);
+      const sent = await runSheetGeneration(builtCharacter, { meta, zones: {} });
+      if (!sent) return;
       setSourceUploadDescription("");
-      if (firstMeta) navigate("/design", { character: firstMeta.id, zone: "full_front" });
-      show(`Sent ${queue.length} profile${queue.length > 1 ? "s" : ""} to luna`);
+      setSourceUploadDrafts([]);
+      navigate("/design", { character: meta.id, zone: "full_front" });
     } catch (error) {
       show(error.message || "Character upload failed");
     } finally {
       setAddingCharacter(false);
     }
   };
-
-  const createCharacterFromUpload = async (img) => createCharactersFromUploads([img]);
 
   const requestZoneFromLuna = async ({
     zone = activeZone,
@@ -1231,8 +1311,11 @@ export function CharacterDesignPage() {
             adding={addingCharacter}
             description={sourceUploadDescription}
             onDescriptionChange={setSourceUploadDescription}
-            onFile={createCharacterFromUpload}
-            onFiles={createCharactersFromUploads}
+            onFiles={stageSourceUploads}
+            stagedImages={sourceUploadDrafts}
+            onRemoveImage={removeSourceDraft}
+            onClearImages={() => setSourceUploadDrafts([])}
+            onStart={createCharacterFromStagedSources}
             phoneView={phoneView}
             onError={(error) => show(error.message || "Image upload failed")}
           />
@@ -1273,8 +1356,11 @@ export function CharacterDesignPage() {
               adding={addingCharacter}
               description={sourceUploadDescription}
               onDescriptionChange={setSourceUploadDescription}
-              onFile={createCharacterFromUpload}
-              onFiles={createCharactersFromUploads}
+              onFiles={stageSourceUploads}
+              stagedImages={sourceUploadDrafts}
+              onRemoveImage={removeSourceDraft}
+              onClearImages={() => setSourceUploadDrafts([])}
+              onStart={createCharacterFromStagedSources}
               phoneView={phoneView}
               onError={(error) => show(error.message || "Image upload failed")}
             />
@@ -1346,9 +1432,15 @@ export function CharacterDesignPage() {
         </div>
       </header>
 
-      <section className="character-roster">{RosterStrip}</section>
-
       <div className="character-design-layout">
+        <aside className="character-design-sidebar surface">
+          <div className="character-upload-sidebar-head">
+            <span className="label">Profiles</span>
+            <span className="mono muted-2">{characters.length}</span>
+          </div>
+          {RosterStrip}
+        </aside>
+
         <section className="character-zone-board">
           <div className="character-zone-toolbar">
             <div className="character-zone-toolbar-title">

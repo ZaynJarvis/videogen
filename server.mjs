@@ -773,7 +773,7 @@ function persistInputImage(imageUrl, baseUrl = publicBaseUrl, label = "Reference
   if (!imageUrl || !String(imageUrl).startsWith("data:")) return null;
   const decoded = decodeDataImageUrl(imageUrl, label);
   if (!decoded) {
-    throw httpError(400, "image_invalid", `${label} must be a JPEG, PNG, or WEBP data URL.`);
+    throw httpError(400, "image_invalid", `${label} is not a supported image data URL.`);
   }
 
   const mediaBaseUrl = baseUrl || publicBaseUrl;
@@ -834,7 +834,7 @@ async function uploadImageToRepo(imageUrl, name, label = "Image", tagOverride) {
   if (!imageUrl || !String(imageUrl).startsWith("data:")) return null;
   const decoded = decodeDataImageUrl(imageUrl, label);
   if (!decoded) {
-    throw httpError(400, "image_invalid", `${label} must be a JPEG, PNG, or WEBP data URL.`);
+    throw httpError(400, "image_invalid", `${label} is not a supported image data URL.`);
   }
 
   assertImageRepoConfigured();
@@ -2139,7 +2139,7 @@ async function handleUploadImage(req, res) {
   const tag = String(input.tag || input.cloud_tag || "").trim();
   const persisted = await uploadImageToRepo(image, input.name || input.filename || "image.jpg", "Image", tag || undefined);
   if (!persisted) {
-    throw httpError(400, "image_invalid", "Image must be a JPEG, PNG, or WEBP data URL.");
+    throw httpError(400, "image_invalid", "Unsupported image data URL.");
   }
 
   sendJson(res, 201, { image: uploadedImagePayload(persisted, input.name || input.filename) });
@@ -2670,11 +2670,11 @@ function mcpTools() {
   return [
     {
       name: "upload_image",
-      description: "Upload a JPEG/PNG/WEBP data URL to Studio's image library and return the public Cloud URL. Use this for agent-generated imagegen outputs before delivering them back to a character-design claim.",
+      description: "Upload an image data URL to Studio's image library and return the public Cloud URL. Use this for agent-generated imagegen outputs before delivering them back to a character-design claim.",
       inputSchema: {
         type: "object",
         properties: {
-          image: { type: "string", description: "JPEG/PNG/WEBP data URL to upload." },
+          image: { type: "string", description: "Image data URL to upload." },
           data_url: { type: "string", description: "Alias for image." },
           name: { type: "string", description: "Optional filename for the uploaded image." },
           tag: { type: "string", description: "Cloud tag for the saved image; use design for character-design images.", default: "studio" },
@@ -2765,11 +2765,11 @@ function mcpTools() {
     },
     {
       name: "design_upload",
-      description: "Precisely upload a single design image (JPEG/PNG/WEBP data URL) to Cloud tagged for design (default tag=design). Returns the public image URL.",
+      description: "Precisely upload a single design image data URL to Cloud tagged for design (default tag=design). Returns the public image URL.",
       inputSchema: {
         type: "object",
         properties: {
-          image: { type: "string", description: "JPEG/PNG/WEBP data URL to upload." },
+          image: { type: "string", description: "Image data URL to upload." },
           data_url: { type: "string", description: "Alias for image." },
           name: { type: "string", description: "Optional filename for the uploaded image." },
           tag: { type: "string", description: "Cloud tag for the saved image (default design).", default: "design" },
@@ -2828,13 +2828,13 @@ function mcpTools() {
     },
     {
       name: "deliver_character_zone",
-      description: "Deliver one finished character-design zone image back to the Studio website using a single-use claim token issued by the website. Provide image_url (a public https URL you uploaded to your cloud) OR image (a JPEG/PNG/WEBP data URL to upload). The image is pushed to the website inbox and applied to the claimed character zone. The claim token is single-use and short-lived.",
+      description: "Deliver one finished character-design zone image back to the Studio website using a single-use claim token issued by the website. Provide image_url (a public https URL you uploaded to your cloud) OR image (an image data URL to upload). The image is pushed to the website inbox and applied to the claimed character zone. The claim token is single-use and short-lived.",
       inputSchema: {
         type: "object",
         properties: {
           claim_token: { type: "string", description: "Single-use claim token issued by the Studio website for one character zone." },
           image_url: { type: "string", description: "Public https URL of the finished image you uploaded to your cloud." },
-          image: { type: "string", description: "Optional JPEG/PNG/WEBP data URL of the finished image to upload to Cloud instead of image_url." },
+          image: { type: "string", description: "Optional image data URL of the finished image to upload to Cloud instead of image_url." },
           note: { type: "string", description: "Optional note describing the delivery." },
         },
         required: ["claim_token"],
@@ -2850,7 +2850,7 @@ function mcpTools() {
           claim_token: { type: "string", description: "Single-use claim token issued by the Studio website for one character sheet." },
           sheet_image_url: { type: "string", description: "Public https URL of the finished contact sheet you uploaded to your cloud." },
           image_url: { type: "string", description: "Alias for sheet_image_url." },
-          image: { type: "string", description: "Optional JPEG/PNG/WEBP data URL of the finished contact sheet to upload to Cloud instead of a url." },
+          image: { type: "string", description: "Optional image data URL of the finished contact sheet to upload to Cloud instead of a url." },
           note: { type: "string", description: "Optional note describing the delivery." },
         },
         required: ["claim_token"],
@@ -2880,7 +2880,7 @@ async function callMcpTool(name, args = {}) {
     const tag = String(args.tag || args.cloud_tag || args.cloudTag || "").trim();
     const uploaded = await uploadImageToRepo(image, args.name || args.filename || "image.jpg", "Image", tag || undefined);
     if (!uploaded) {
-      throw httpError(400, "image_invalid", "Image must be a JPEG, PNG, or WEBP data URL.");
+      throw httpError(400, "image_invalid", "Unsupported image data URL.");
     }
     return mcpTextResult({ image: uploadedImagePayload(uploaded, args.name || args.filename) });
   }
@@ -2922,7 +2922,7 @@ async function callMcpTool(name, args = {}) {
     }
     const uploaded = await uploadImageToRepo(image, args.name || "design.jpg", "Design image", args.tag || "design");
     if (!uploaded) {
-      throw httpError(400, "image_invalid", "Image must be a JPEG, PNG, or WEBP data URL.");
+      throw httpError(400, "image_invalid", "Unsupported image data URL.");
     }
     return mcpTextResult({ image: uploadedImagePayload(uploaded, args.name) });
   }
@@ -2966,7 +2966,7 @@ async function callMcpTool(name, args = {}) {
     if (typeof dataImage === "string" && dataImage.startsWith("data:")) {
       const uploaded = await uploadImageToRepo(dataImage, `bot-${zoneId}.jpg`, "Bot delivery", "design");
       if (!uploaded?.url) {
-        throw httpError(400, "image_invalid", "Image must be a JPEG, PNG, or WEBP data URL.");
+        throw httpError(400, "image_invalid", "Unsupported image data URL.");
       }
       imageUrl = uploaded.url;
     } else {
@@ -3012,7 +3012,7 @@ async function callMcpTool(name, args = {}) {
     if (typeof dataImage === "string" && dataImage.startsWith("data:")) {
       const uploaded = await uploadImageToRepo(dataImage, `bot-sheet-${claim.characterId}.jpg`, "Bot sheet delivery", "design");
       if (!uploaded?.url) {
-        throw httpError(400, "image_invalid", "Image must be a JPEG, PNG, or WEBP data URL.");
+        throw httpError(400, "image_invalid", "Unsupported image data URL.");
       }
       url = uploaded.url;
     } else {
