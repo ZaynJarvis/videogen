@@ -17,6 +17,16 @@ function loadImage(src) {
 }
 
 export async function prepareUploadImage(file) {
+  const allowedTypes = new Set(["image/jpeg", "image/png", "image/webp"]);
+  const fileType = String(file?.type || "").toLowerCase();
+  const fileName = String(file?.name || "").toLowerCase();
+  if (!allowedTypes.has(fileType) && !/\.(jpe?g|png|webp)$/.test(fileName)) {
+    throw new Error("Use a JPEG, PNG, or WEBP image.");
+  }
+  if (file.size > 10 * 1024 * 1024) {
+    throw new Error("Image is too large. Use an image under 10 MB.");
+  }
+
   const original = await readFileAsDataUrl(file);
   const img = await loadImage(original);
   const maxSide = 1600;

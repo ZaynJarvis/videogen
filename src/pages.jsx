@@ -1,5 +1,6 @@
 import { useState, useRef, useMemo, useEffect, useCallback } from 'react';
-import { Icon, DropZone, VideoPlayer, GenerationProgress, useToast } from './components';
+import { Icon, DropZone, VideoPlayer, GenerationProgress } from './components';
+import { useToast } from './useToast';
 import { useStore, useHashRoute, relTime, fmtDate } from './store';
 import { authHeader, clearToken, getToken } from './auth';
 import { prepareUploadImage } from './imageUpload';
@@ -198,19 +199,19 @@ function imageFromListResponse(image) {
   };
 }
 
-async function uploadImageAsset(img) {
+async function uploadImageAsset(img, tag = img?.tag || "") {
   const src = String(img?.src || "");
   if (!src) {
     throw new Error("Image is missing.");
   }
   if (!src.startsWith("data:")) {
-    return { ...img, cloud: true };
+    return { ...img, tag: tag || img.tag, cloud: true };
   }
 
   const data = await fetchJson("/api/images", {
     method: "POST",
     headers: { "content-type": "application/json" },
-    body: JSON.stringify({ name: img.name, image: src }),
+    body: JSON.stringify({ name: img.name, image: src, tag }),
   });
   return imageFromUploadResponse(data, img);
 }
@@ -587,6 +588,8 @@ function mergeCharacterZones(character, saved = {}) {
       lastBotPrompt: override.lastBotPrompt || "",
       model: override.model || "",
       generatedPrompt: override.generatedPrompt || "",
+      referenceImages: Array.isArray(override.referenceImages) ? override.referenceImages : [],
+      referenceDescription: override.referenceDescription || "",
       temporary: Boolean(override.temporary),
     };
   });
@@ -616,23 +619,29 @@ function characterReferenceItems(character, saved = {}) {
   });
 }
 
-function buildZoneContext(character, zone, instruction) {
+function buildZoneContext(character, zone, instruction, referenceImages = [], referenceDescription = "") {
   // Fall back to the source card when this zone has no generated image yet.
   const currentImage = zone.currentImage || character.sourceCard || character.source;
+  const references = (Array.isArray(referenceImages) ? referenceImages : []).filter((img) => img?.src || img?.url);
   return [
     `Character: ${character.name} (${character.code})`,
     `Zone: ${zone.id} / ${zone.label}`,
     `Role: ${zone.role}`,
     `Current image: ${currentImage}`,
+    references.length ? `Dropped reference images: ${references.map((img) => img.src || img.url).join(" ")}` : "",
+    referenceDescription ? `Reference description: ${referenceDescription}` : "",
     `Requested improvement: ${instruction}`,
     `Identity contract: ${character.identityContract.join(" ")}`,
     `Negative prompt: ${character.negativePrompt}`,
   ].filter(Boolean).join("\n");
 }
 
-function buildZoneImprovement(character, zone, instruction) {
+function buildZoneImprovement(character, zone, instruction, referenceImages = [], referenceDescription = "") {
+  const references = (Array.isArray(referenceImages) ? referenceImages : []).filter((img) => img?.src || img?.url);
   return [
     `Improve only the "${zone.label}" view (${zone.role}) of ${character.name}.`,
+    references.length ? "Use the dropped reference image(s) as the main visual reference for this single zone." : "",
+    referenceDescription ? `Reference description: ${referenceDescription}` : "",
     instruction,
     `Keep ${character.name} the same recognizable identity — do not change it into another character.`,
     `Identity contract: ${character.identityContract.join(" ")}`,
@@ -640,13 +649,13 @@ function buildZoneImprovement(character, zone, instruction) {
   ].filter(Boolean).join(" ");
 }
 
-function buildZoneBotMessage(character, zone, instruction) {
+function buildZoneBotMessage(character, zone, instruction, referenceImages = [], referenceDescription = "") {
   return [
     `Please improve the "${zone.label}" zone of character ${character.name} (${character.code}).`,
     "",
-    buildZoneImprovement(character, zone, instruction),
+    buildZoneImprovement(character, zone, instruction, referenceImages, referenceDescription),
     "",
-    "Use the source image and improvement in the context block. Deliver exactly one final image back via the MCP tool described there.",
+    "Use the source image and any dropped reference image URLs in the context block. Deliver exactly one final image back via the MCP tool described there.",
   ].join("\n");
 }
 
@@ -671,7 +680,6 @@ function CharacterReview({ character, zones, onClose, onSelectZone, onSave, show
 
   useEffect(() => {
     let cancelled = false;
-    setStitching(true);
     stitchZonesToSheet(zones, { cols: 3, rows: 3, cell: 512, gap: 14 })
       .then((dataUrl) => { if (!cancelled) { setComposite(dataUrl); setStitching(false); } })
       .catch(() => { if (!cancelled) { setComposite(""); setStitching(false); } });
@@ -761,6 +769,7 @@ export function CharacterDesignPage() {
   const { state, addImage, updateCharacterDesign, removeCharacterDesign } = useStore();
   const { query, navigate } = useHashRoute();
   const { show, node } = useToast();
+  const phoneView = usePhoneView();
   const builtInIds = useMemo(() => new Set(CHARACTER_DESIGNS.map((c) => c.id)), []);
   const characters = useMemo(() => listWorkspaceCharacters(state.characterDesigns), [state.characterDesigns]);
   const selectedCharacter = useMemo(
@@ -777,14 +786,16 @@ export function CharacterDesignPage() {
   const activeZone = zones.find((zone) => zone.id === selectedZoneId) || zones[0] || null;
   const [zoneDrafts, setZoneDrafts] = useState({});
   const [replacingZone, setReplacingZone] = useState("");
-  const [generatingZone, setGeneratingZone] = useState("");
   const [addingCharacter, setAddingCharacter] = useState(false);
+  const [sourceUploadDescription, setSourceUploadDescription] = useState("");
+  const [zoneReferenceDescriptions, setZoneReferenceDescriptions] = useState({});
   const [renaming, setRenaming] = useState(false);
   const [renameDraft, setRenameDraft] = useState("");
   const [reviewOpen, setReviewOpen] = useState(false);
   const [runtimeImage, setRuntimeImage] = useState(null);
   const activeKey = activeZone ? `${selectedCharacter.id}:${activeZone.id}` : "";
   const activeInstruction = activeZone ? (zoneDrafts[activeKey] ?? activeZone.improvement) : "";
+  const activeReferenceDescription = activeZone ? (zoneReferenceDescriptions[activeKey] ?? activeZone.referenceDescription ?? "") : "";
   const updatedZones = zones.filter((zone) => zone.updatedAt).length;
   // Still waiting for luna to deliver some zones after a sheet request.
   const awaitingSheet = hasCharacter && Boolean(saved.sheetRequestedAt) && updatedZones < zones.length;
@@ -907,7 +918,8 @@ export function CharacterDesignPage() {
           zones: zonesPayload,
           grid: { rows: 3, cols: 3 },
         }) });
-      const improvement = `Build ${character.name}'s full 9-zone identity set from the reference. Keep one consistent identity across all views.`;
+      const description = savedMeta?.meta?.sourceDescription ? ` Description: ${savedMeta.meta.sourceDescription}` : "";
+      const improvement = `Build ${character.name}'s full 9-zone identity set from the reference. Keep one consistent identity across all views.${description}`;
       const message = `@luna please generate ${character.name}'s character identity views from the reference image, then deliver them back to Studio.`;
       updateCharacterDesign(character.id, (current) => ({ meta: current.meta || savedMeta?.meta, sheetRequestedAt: Date.now() }));
       window.dispatchEvent(new CustomEvent("studio:zouk-compose", { detail: {
@@ -922,28 +934,43 @@ export function CharacterDesignPage() {
     }
   };
 
-  const createCharacterFromUpload = async (img) => {
+  const createCharactersFromUploads = async (images) => {
     if (addingCharacter) return;
+    const queue = (Array.isArray(images) ? images : [images]).filter(Boolean);
+    if (!queue.length) return;
     setAddingCharacter(true);
     try {
-      const remote = await uploadImageAsset({
-        ...img,
-        name: `character-${img.name || "reference.png"}`,
-      });
-      const source = addImage({
-        ...remote,
-        name: img.name || "Character reference",
-        provider: remote.provider || "cloud",
-        tag: remote.tag || "studio",
-      });
-      // New characters are named from the dropped file/source name.
-      const meta = makeUploadedCharacterMeta(source.name || img.name || "New Character", source);
-      updateCharacterDesign(meta.id, { meta, activeZoneId: "full_front", zones: {} });
-      navigate("/design", { character: meta.id, zone: "full_front" });
-      show(`Sent ${meta.shortName} to luna to build the identity set`);
-      const builtCharacter = characterFromMeta(meta);
-      // fire and forget; runSheetGeneration sends to luna + toasts
-      runSheetGeneration(builtCharacter, { meta, zones: {} });
+      let firstMeta = null;
+      const description = sourceUploadDescription.trim();
+      for (const [index, img] of queue.entries()) {
+        const displayName = queue.length > 1
+          ? `${img.name || "Character reference"} ${index + 1}`
+          : (img.name || "Character reference");
+        const remote = await uploadImageAsset({
+          ...img,
+          name: `character-${img.name || "reference.png"}`,
+        }, "design");
+        const source = addImage({
+          ...remote,
+          name: displayName,
+          provider: remote.provider || "cloud",
+          tag: remote.tag || "design",
+        });
+        const meta = makeUploadedCharacterMeta(source.name || displayName || "New Character", source);
+        if (description) {
+          meta.sourceDescription = description;
+          meta.spec = [...(meta.spec || []), ["Description", description]];
+          meta.identityContract = [...(meta.identityContract || []), `User description: ${description}`];
+        }
+        updateCharacterDesign(meta.id, { meta, activeZoneId: "full_front", zones: {} });
+        if (!firstMeta) firstMeta = meta;
+        const builtCharacter = characterFromMeta(meta);
+        // fire and forget; runSheetGeneration sends to luna + toasts
+        runSheetGeneration(builtCharacter, { meta, zones: {} });
+      }
+      setSourceUploadDescription("");
+      if (firstMeta) navigate("/design", { character: firstMeta.id, zone: "full_front" });
+      show(`Sent ${queue.length} profile${queue.length > 1 ? "s" : ""} to luna`);
     } catch (error) {
       show(error.message || "Character upload failed");
     } finally {
@@ -951,94 +978,30 @@ export function CharacterDesignPage() {
     }
   };
 
-  const replaceZoneImage = async (img) => {
-    if (!activeZone || replacingZone) return;
-    setReplacingZone(activeKey);
-    try {
-      const remote = await uploadImageAsset({
-        ...img,
-        name: `${selectedCharacter.shortName}-${activeZone.id}-${img.name || "zone.png"}`,
-      }, "design");
-      const item = addImage({
-        ...remote,
-        name: `${selectedCharacter.shortName} ${activeZone.label}`,
-        provider: remote.provider || "cloud",
-        tag: remote.tag || "design",
-        characterId: selectedCharacter.id,
-        characterName: selectedCharacter.name,
-        zoneId: activeZone.id,
-      });
-      updateCharacterDesign(selectedCharacter.id, (current) => ({
-        meta: current.meta || saved.meta,
-        activeZoneId: activeZone.id,
-        zones: {
-          ...(current.zones || {}),
-          [activeZone.id]: {
-            url: item.src,
-            name: item.name,
-            imageId: item.id,
-            updatedAt: Date.now(),
-            note: "Uploaded improvement",
-            lastBotPrompt: activeInstruction,
-          },
-        },
-      }));
-      show(`${activeZone.label} updated`);
-    } catch (error) {
-      show(error.message || "Zone upload failed");
-    } finally {
-      setReplacingZone("");
-    }
-  };
+  const createCharacterFromUpload = async (img) => createCharactersFromUploads([img]);
 
-  const resetActiveZone = () => {
-    updateCharacterDesign(selectedCharacter.id, (current) => {
-      const nextZones = { ...(current.zones || {}) };
-      delete nextZones[activeZone.id];
-      return { meta: current.meta || saved.meta, activeZoneId: activeZone.id, zones: nextZones };
-    });
-    show(`${activeZone.label} reset`);
-  };
-
-  const addZoneToLibrary = () => {
-    // Fall back to the source card when this zone hasn't been generated yet.
-    const zoneSrc = activeZone.currentImage || selectedCharacter.sourceCard || selectedCharacter.source;
-    const item = addImage({
-      name: `${selectedCharacter.shortName} ${activeZone.label}`,
-      src: zoneSrc,
-      url: zoneSrc,
-      mediaPath: zoneSrc,
-      provider: activeZone.updatedAt ? "cloud" : "studio-design",
-      tag: "studio",
-      characterId: selectedCharacter.id,
-      characterName: selectedCharacter.name,
-      zoneId: activeZone.id,
-    });
-    navigate("/create", { fromImage: item.id });
-  };
-
-  const addCharacterToCreate = () => {
-    const refs = characterReferenceItems(selectedCharacter, saved);
-    const items = refs.map((ref) => addImage(ref));
-    navigate("/create", { fromImages: items.map((item) => item.id).join(",") });
-    show(`${selectedCharacter.shortName} references added`);
-  };
-
-  // ── Improve with luna: mint a single-use claim, dispatch compose with MCP delivery info ──
-  const improveWithLuna = async () => {
-    if (!activeZone || generatingZone) return;
-    const improvement = buildZoneImprovement(selectedCharacter, activeZone, activeInstruction);
-    const message = buildZoneBotMessage(selectedCharacter, activeZone, activeInstruction);
-    const referencedText = buildZoneContext(selectedCharacter, activeZone, activeInstruction);
-    const sourceImage = activeZone.currentImage || selectedCharacter.source || selectedCharacter.sourceCard;
+  const requestZoneFromLuna = async ({
+    zone = activeZone,
+    instruction = activeInstruction,
+    references = zone?.referenceImages || [],
+    description = activeReferenceDescription,
+  } = {}) => {
+    if (!zone) return;
+    const referenceImages = (Array.isArray(references) ? references : [references])
+      .filter((img) => img?.src || img?.url)
+      .map((img) => ({ ...img, src: img.src || img.url, url: img.url || img.src }));
+    const sourceImage = referenceImages[0]?.src || zone.currentImage || selectedCharacter.sourceCard || selectedCharacter.source;
+    const improvement = buildZoneImprovement(selectedCharacter, zone, instruction, referenceImages, description);
+    const message = buildZoneBotMessage(selectedCharacter, zone, instruction, referenceImages, description);
+    const referencedText = buildZoneContext(selectedCharacter, zone, instruction, referenceImages, description);
     try {
       const claim = await fetchJson("/api/character-design/claim", {
         method: "POST", headers: { "content-type": "application/json" },
         body: JSON.stringify({
           character_id: selectedCharacter.id,
           character_name: selectedCharacter.name,
-          zone_id: activeZone.id,
-          label: activeZone.label,
+          zone_id: zone.id,
+          label: zone.label,
           source_image_url: sourceImage,
           identity_contract: selectedCharacter.identityContract,
           negative_prompt: selectedCharacter.negativePrompt,
@@ -1046,13 +1009,15 @@ export function CharacterDesignPage() {
       });
       updateCharacterDesign(selectedCharacter.id, (current) => ({
         meta: current.meta || saved.meta,
-        activeZoneId: activeZone.id,
+        activeZoneId: zone.id,
         zones: {
           ...(current.zones || {}),
-          [activeZone.id]: {
-            ...(current.zones?.[activeZone.id] || {}),
+          [zone.id]: {
+            ...(current.zones?.[zone.id] || {}),
             botRequestedAt: Date.now(),
-            lastBotPrompt: activeInstruction,
+            lastBotPrompt: instruction,
+            referenceImages,
+            referenceDescription: description,
           },
         },
       }));
@@ -1060,25 +1025,87 @@ export function CharacterDesignPage() {
         detail: {
           message,
           referencedText,
-          sourceUrl: characterDesignDeepLink(selectedCharacter.id, activeZone.id),
+          sourceUrl: characterDesignDeepLink(selectedCharacter.id, zone.id),
           autoSend: true,
           sourceImage,
+          referenceImages,
           improvement,
           mcp: {
             endpoint: claim.mcp_url,
             token: claim.token,
             tool: claim.tool,
             characterId: selectedCharacter.id,
-            zoneId: activeZone.id,
+            zoneId: zone.id,
             characterName: selectedCharacter.name,
-            zoneLabel: activeZone.label,
+            zoneLabel: zone.label,
+            referenceImages,
           },
         },
       }));
-      show(`Sent ${activeZone.label} to luna`);
+      show(`Sent ${zone.label} to luna`);
     } catch (error) {
-      show(error.message || "Could not reach the bot");
+      show(error.message || "Could not reach luna");
     }
+  };
+
+  const replaceZoneImages = async (images) => {
+    if (!activeZone || replacingZone) return;
+    const queue = (Array.isArray(images) ? images : [images]).filter(Boolean);
+    if (!queue.length) return;
+    setReplacingZone(activeKey);
+    try {
+      const references = [];
+      for (const img of queue) {
+        const remote = await uploadImageAsset({
+          ...img,
+          name: `${selectedCharacter.shortName}-${activeZone.id}-${img.name || "zone.png"}`,
+        }, "design");
+        const item = addImage({
+          ...remote,
+          name: `${selectedCharacter.shortName} ${activeZone.label} reference`,
+          provider: remote.provider || "cloud",
+          tag: remote.tag || "design",
+          characterId: selectedCharacter.id,
+          characterName: selectedCharacter.name,
+          zoneId: activeZone.id,
+        });
+        references.push(item);
+      }
+      updateCharacterDesign(selectedCharacter.id, (current) => ({
+        meta: current.meta || saved.meta,
+        activeZoneId: activeZone.id,
+        zones: {
+          ...(current.zones || {}),
+          [activeZone.id]: {
+            ...(current.zones?.[activeZone.id] || {}),
+            referenceImages: references,
+            referenceDescription: activeReferenceDescription,
+            note: "Reference upload",
+            lastBotPrompt: activeInstruction,
+            botRequestedAt: Date.now(),
+          },
+        },
+      }));
+      await requestZoneFromLuna({
+        zone: activeZone,
+        instruction: activeInstruction,
+        references,
+        description: activeReferenceDescription,
+      });
+    } catch (error) {
+      show(error.message || "Zone upload failed");
+    } finally {
+      setReplacingZone("");
+    }
+  };
+
+  const replaceZoneImage = async (img) => replaceZoneImages([img]);
+
+  const improveWithLuna = async () => {
+    await requestZoneFromLuna({
+      references: activeZone?.referenceImages || [],
+      description: activeReferenceDescription,
+    });
   };
 
   // ── Add the rename + review-save handlers ──
@@ -1097,16 +1124,6 @@ export function CharacterDesignPage() {
       meta: { ...(current.meta || saved.meta), name: next || current.meta?.name },
     }));
     show("Character renamed");
-  };
-
-  const copyPrompt = async () => {
-    const message = buildZoneBotMessage(selectedCharacter, activeZone, activeInstruction);
-    try {
-      await navigator.clipboard.writeText(message);
-      show("Bot prompt copied");
-    } catch {
-      show(message);
-    }
   };
 
   const RosterStrip = (
@@ -1166,11 +1183,20 @@ export function CharacterDesignPage() {
                 <span className="mono muted-2">Adding character…</span>
               </div>
             )}
+            <textarea
+              className="textarea character-source-description"
+              value={sourceUploadDescription}
+              onChange={(event) => setSourceUploadDescription(event.target.value)}
+              placeholder="Description for the uploaded reference set"
+            />
             <DropZone
+              multiple
               image={null}
               onFile={createCharacterFromUpload}
-              allowDrag
-              hint={addingCharacter ? "Adding character…" : "Drop a source image"}
+              onFiles={createCharactersFromUploads}
+              allowDrag={!phoneView}
+              onError={(error) => show(error.message || "Image upload failed")}
+              hint={addingCharacter ? "Adding character…" : phoneView ? "Upload source images" : "Drop source images"}
             />
           </div>
         </div>
@@ -1240,12 +1266,21 @@ export function CharacterDesignPage() {
               <span className="mono muted-2">Adding character…</span>
             </div>
           )}
+          <textarea
+            className="textarea character-source-description"
+            value={sourceUploadDescription}
+            onChange={(event) => setSourceUploadDescription(event.target.value)}
+            placeholder="Source description"
+          />
           <DropZone
             compact
+            multiple
             image={null}
             onFile={createCharacterFromUpload}
-            allowDrag
-            hint={addingCharacter ? "Adding…" : "Drop source"}
+            onFiles={createCharactersFromUploads}
+            allowDrag={!phoneView}
+            onError={(error) => show(error.message || "Image upload failed")}
+            hint={addingCharacter ? "Adding…" : phoneView ? "Upload source" : "Drop sources"}
           />
         </div>
       </header>
@@ -1332,9 +1367,6 @@ export function CharacterDesignPage() {
                   {selectedCharacter.identityContract.map((line) => <p key={line}>{line}</p>)}
                 </div>
               </div>
-              <button className="btn" onClick={addCharacterToCreate}>
-                <Icon name="sparkle" size={14} /> Use character refs
-              </button>
             </div>
           </details>
         </section>
@@ -1371,32 +1403,32 @@ export function CharacterDesignPage() {
           </div>
 
           <div className="character-model-actions">
-            <button className="btn btn-primary" onClick={improveWithLuna} disabled={Boolean(generatingZone)}>
+            <button className="btn btn-primary" onClick={improveWithLuna} disabled={Boolean(replacingZone)}>
               <Icon name="sparkle" size={14} /> Improve with luna
             </button>
           </div>
 
-          <div className="character-zone-actions">
-            <button className="btn" onClick={addZoneToLibrary}>
-              <Icon name="sparkle" size={14} /> Use in Create
-            </button>
-            <button className="btn btn-ghost" onClick={resetActiveZone} disabled={!activeZone.updatedAt}>
-              <Icon name="refresh" size={14} /> Reset zone
-            </button>
+          <div>
+            <label className="label">Reference description</label>
+            <textarea
+              className="textarea character-bot-textarea"
+              value={activeReferenceDescription}
+              onChange={(e) => setZoneReferenceDescriptions((drafts) => ({ ...drafts, [activeKey]: e.target.value }))}
+              placeholder="Describe what these references should change or preserve"
+            />
           </div>
 
-          <button className="btn btn-ghost character-copy-prompt" onClick={copyPrompt}>
-            <Icon name="copy" size={14} /> Copy prompt
-          </button>
-
           <div>
-            <label className="label">{replacingZone === activeKey ? "Uploading" : "Replace image"}</label>
+            <label className="label">{replacingZone === activeKey ? "Uploading" : "Reference upload"}</label>
             <DropZone
               compact
+              multiple
               image={null}
               onFile={replaceZoneImage}
-              allowDrag
-              hint={replacingZone === activeKey ? "Uploading zone" : `Drop ${activeZone.label}`}
+              onFiles={replaceZoneImages}
+              allowDrag={!phoneView}
+              onError={(error) => show(error.message || "Image upload failed")}
+              hint={replacingZone === activeKey ? "Uploading zone" : phoneView ? `Upload ${activeZone.label} refs` : `Drop ${activeZone.label} refs`}
             />
           </div>
 
@@ -1407,10 +1439,10 @@ export function CharacterDesignPage() {
             </div>
           )}
 
-          {activeZone.model && (
+          {activeZone.referenceImages?.length > 0 && (
             <div className="character-bot-status">
-              <span>model</span>
-              <strong>{activeZone.temporary ? `${activeZone.model} · temporary` : activeZone.model}</strong>
+              <span>refs</span>
+              <strong>{activeZone.referenceImages.length} image{activeZone.referenceImages.length > 1 ? "s" : ""}</strong>
             </div>
           )}
         </aside>

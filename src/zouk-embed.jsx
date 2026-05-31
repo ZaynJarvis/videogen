@@ -237,7 +237,15 @@ function buildMcpDeliveryBlock(mcp, sourceImage, improvement) {
   const tool = compactText(mcp?.tool, 120) || (kind === 'sheet' ? 'deliver_character_sheet' : 'deliver_character_zone');
   if (!endpoint || !token) return null;
   const lines = [];
+  const referenceImages = (Array.isArray(mcp?.referenceImages) ? mcp.referenceImages : [])
+    .map((img) => compactText(img?.src || img?.url || img, 1600))
+    .filter(Boolean);
   if (sourceImage) lines.push(`  <source-image>${escapeContextText(sourceImage, 1600)}</source-image>`);
+  if (referenceImages.length) {
+    lines.push('  <reference-images>');
+    referenceImages.forEach((url, index) => lines.push(`    ${index + 1}. ${escapeContextText(url, 1600)}`));
+    lines.push('  </reference-images>');
+  }
   if (improvement) lines.push(`  <improvement>${escapeContextText(improvement)}</improvement>`);
   lines.push(`  <deliver-via-mcp endpoint="${escapeContextAttr(endpoint)}" token="${escapeContextAttr(token, 200)}" tool="${escapeContextAttr(tool, 120)}" kind="${escapeContextAttr(kind, 40)}">`);
   if (kind === 'sheet') {
@@ -252,7 +260,10 @@ function buildMcpDeliveryBlock(mcp, sourceImage, improvement) {
     }
     lines.push(`  Steps for you, the agent: (1) download/open source-image and use YOUR OWN imagegen tool with source-image attached as an actual visual reference input; do not ask Studio MCP to generate and do not replace the image reference with a text-only description. (2) For speed, prefer generating ONE ${rows}x${cols} contact sheet containing all zones in the exact order above, then crop it locally into the ${zones.length || rows * cols} zone images. (3) For each final crop, call the Studio MCP server at endpoint with Authorization: Bearer &lt;token&gt;, JSON-RPC tools/call name "upload_image" arguments { "image":"&lt;JPEG/PNG/WEBP data URL&gt;", "name":"&lt;zone id&gt;.jpg", "tag":"design" }, then call tools/call name "deliver_character_zone" arguments { "claim_token":"&lt;token&gt;", "zone_id":"&lt;zone id&gt;", "image_url":"&lt;uploaded image url&gt;" }. If local cropping is not available, upload the whole sheet with upload_image and call deliver_character_sheet arguments { "claim_token":"&lt;token&gt;", "sheet_image_url":"&lt;uploaded sheet url&gt;" }. Zone ids: [${escapeContextText(zoneIds, 600)}]. The token covers all zones until done and expires in 30 min.`);
   } else {
-    lines.push('  Steps for you, the agent: (1) download/open source-image and use YOUR OWN imagegen tool with source-image attached as an actual visual reference input; do not ask Studio MCP to generate and do not replace the image reference with a text-only description. (2) Call the Studio MCP server at endpoint with Authorization: Bearer &lt;token&gt;, JSON-RPC tools/call name "upload_image" arguments { "image":"&lt;JPEG/PNG/WEBP data URL&gt;", "name":"&lt;zone id&gt;.jpg", "tag":"design" }. (3) Call tools/call name "deliver_character_zone" arguments { "claim_token":"&lt;token&gt;", "image_url":"&lt;uploaded image url&gt;" }. The token is single-use and expires in 30 min. Deliver exactly one final image.');
+    const zoneId = compactText(mcp?.zoneId || mcp?.zone_id || '', 80);
+    const zoneLabel = compactText(mcp?.zoneLabel || mcp?.zone_label || '', 120);
+    if (zoneId) lines.push(`  Zone: ${escapeContextText(zoneId, 80)}${zoneLabel ? ` — ${escapeContextText(zoneLabel, 120)}` : ''}`);
+    lines.push(`  Steps for you, the agent: (1) download/open source-image and use YOUR OWN imagegen tool with source-image attached as an actual visual reference input; do not ask Studio MCP to generate and do not replace the image reference with a text-only description. (2) Generate only this one requested zone image. (3) Call the Studio MCP server at endpoint with Authorization: Bearer &lt;token&gt;, JSON-RPC tools/call name "upload_image" arguments { "image":"&lt;JPEG/PNG/WEBP data URL&gt;", "name":"${escapeContextText(zoneId || '<zone id>', 100)}.jpg", "tag":"design" }. (4) Call tools/call name "deliver_character_zone" arguments { "claim_token":"&lt;token&gt;", ${zoneId ? `"zone_id":"${escapeContextText(zoneId, 80)}", ` : ''}"image_url":"&lt;uploaded image url&gt;" }. The token is single-use and expires in 30 min. Deliver exactly one final image.`);
   }
   lines.push('  </deliver-via-mcp>');
   return lines.join('\n');
@@ -263,6 +274,9 @@ function buildInjectedContext(sourceUrl, referencedText, includeUrl, mcp, source
   const lines = ['<zouk-context>'];
   if (mcpBlock) {
     lines.push(mcpBlock);
+    if (includeUrl) lines.push(`  <url>${escapeContextText(sourceUrl, 1600)}</url>`);
+    const reference = compactText(referencedText);
+    if (reference) lines.push(`  <referenced-text>${escapeContextText(reference)}</referenced-text>`);
   } else {
     if (includeUrl) lines.push(`  <url>${escapeContextText(sourceUrl, 1600)}</url>`);
     const reference = compactText(referencedText);
@@ -450,6 +464,7 @@ export function ZoukStudioChat({ route }) {
   const textareaRef = useRef(null);
   const wsRef = useRef(null);
   const pendingAutoSendRef = useRef(null);
+  const statusRef = useRef(status);
   const target = `#${CONFIG.channel}`;
   const referencedText = compactText(selectedText);
   const includeContextUrl = Boolean(sourceUrl && (sourceUrl !== lastContextUrl || referencedText));
@@ -471,6 +486,10 @@ export function ZoukStudioChat({ route }) {
     setSourceUrl(next);
     return next;
   }, []);
+
+  useEffect(() => {
+    statusRef.current = status;
+  }, [status]);
 
   const loadHistory = useCallback(async (nextToken = token) => {
     if (!nextToken) return;
@@ -723,6 +742,7 @@ export function ZoukStudioChat({ route }) {
           sourceImage: nextSourceImage,
           improvement: nextImprovement,
         };
+        if (statusRef.current === 'error') setStatus('idle');
       } else {
         pendingAutoSendRef.current = null;
       }

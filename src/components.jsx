@@ -1,4 +1,4 @@
-import { useState, useRef, useEffect, useCallback } from 'react';
+import { useState, useRef, useEffect } from 'react';
 import { prepareUploadImage } from './imageUpload';
 
 export function Icon({ name, size = 16, ...rest }) {
@@ -26,18 +26,29 @@ export function Icon({ name, size = 16, ...rest }) {
   );
 }
 
-export function DropZone({ onFile, image, onClear, hint = "Drop image, or click to browse", accept = "image/*", compact = false, allowDrag = true }) {
+export function DropZone({ onFile, onFiles, image, onClear, onError, hint = "Drop image, or click to browse", accept = "image/*", compact = false, allowDrag = true, multiple = false }) {
   const [over, setOver] = useState(false);
   const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
   const inputRef = useRef(null);
   const handle = async (files) => {
-    if (busy || !files || !files[0]) return;
-    const file = files[0];
+    const fileList = Array.from(files || []).filter(Boolean);
+    if (busy || !fileList.length) return;
     try {
       setBusy(true);
-      const src = await prepareUploadImage(file);
-      await onFile({ name: file.name, src });
+      setError("");
+      const selected = multiple ? fileList : fileList.slice(0, 1);
+      const images = [];
+      for (const file of selected) {
+        const src = await prepareUploadImage(file);
+        images.push({ name: file.name, src });
+      }
+      if (multiple && onFiles) await onFiles(images);
+      else await onFile?.(images[0]);
     } catch (error) {
+      const message = error instanceof Error ? error.message : "Image upload failed.";
+      setError(message);
+      onError?.(error);
       console.warn("image upload failed", error);
     } finally {
       setBusy(false);
@@ -61,8 +72,12 @@ export function DropZone({ onFile, image, onClear, hint = "Drop image, or click 
         if (data) {
           try {
             setBusy(true);
-            await onFile(JSON.parse(data));
-          } catch {
+            setError("");
+            await onFile?.(JSON.parse(data));
+          } catch (error) {
+            const message = error instanceof Error ? error.message : "Image upload failed.";
+            setError(message);
+            onError?.(error);
             // Ignore malformed drag payloads.
           } finally {
             setBusy(false);
@@ -94,11 +109,9 @@ export function DropZone({ onFile, image, onClear, hint = "Drop image, or click 
         <>
           <Icon name="upload" size={32} className={"drop-icon" + (busy ? " spin-ic" : "")} />
           <div style={{ fontSize: 14, fontWeight: 500 }}>{busy ? "Uploading image" : hint}</div>
-          <div className="mono muted-2" style={{ fontSize: 11, letterSpacing: ".06em" }}>
-            {allowDrag ? "JPEG · PNG · WEBP · up to 10 MB" : "JPEG · PNG · WEBP"}
-          </div>
+          {error && <div className="drop-error">{error}</div>}
           <input
-            ref={inputRef} type="file" accept={accept}
+            ref={inputRef} type="file" accept={accept} multiple={multiple}
             style={{ display: "none" }}
             onChange={(e) => handle(e.target.files)}
           />
@@ -202,14 +215,4 @@ export function GenerationProgress({ progress, label }) {
       </div>
     </div>
   );
-}
-
-export function useToast() {
-  const [toast, setToast] = useState(null);
-  const show = useCallback((msg) => {
-    setToast(msg);
-    setTimeout(() => setToast(null), 2500);
-  }, []);
-  const node = toast ? <div className="toast">{toast}</div> : null;
-  return { show, node };
 }
