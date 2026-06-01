@@ -58,6 +58,19 @@ All styles in `themes.css`. Theme tokens are CSS custom properties on `[data-the
 
 Component classes: `.btn`, `.btn-primary`, `.btn-ghost`, `.btn-lg`, `.btn-icon`, `.surface`, `.input`, `.textarea`, `.seg`/`.seg-opt`, `.chip`, `.video-card`, `.drop`, `.img-tile`, `.toast`
 
+## Impeccable pilot
+
+This repo has a lightweight Impeccable integration for design review:
+
+```bash
+npm run design:detect       # deterministic design anti-pattern scan
+npm run design:detect:json  # same scan, JSON output
+```
+
+`PRODUCT.md` captures Studio's product/register context and `DESIGN.md` captures the current Studio design system. Use those files as the persistent context for Impeccable-driven design work. Do not commit the generated `.agents` / `.claude` skill bundle unless the project explicitly decides to vendor agent skills; the current pilot uses `npx impeccable@2.3.2` directly.
+
+The detector is a review aid, not a mechanical source of truth. The current baseline has findings in the embedded OpenViking blog experiment, especially thick side borders and rounded-card accent borders; treat those separately from the core Studio tool UI.
+
 ## Seedance params (Create page)
 
 | Param | Options | Default |
